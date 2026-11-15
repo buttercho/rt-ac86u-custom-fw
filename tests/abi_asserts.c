@@ -22,16 +22,23 @@ _Static_assert(sizeof(long) == 4, "RT-AC86U userspace long must be 4 bytes");
 #endif
 
 #ifdef CHECK_MERLIN_HEADERS
+#include <string.h>
 #include <bcmnvram.h>
 /* RT-AC86U uses 128 KB (0x20000) NVRAM_SPACE on 94908HND */
 _Static_assert(MAX_NVRAM_SPACE >= 0x10000, "Unexpected MAX_NVRAM_SPACE shrink");
 struct _nvram_tuple_abi_probe {
     char *name;
     char *value;
+    unsigned short len;
+    unsigned short type;
+    unsigned short acc_level;
+    unsigned short enc;
     struct _nvram_tuple_abi_probe *next;
 };
 _Static_assert(sizeof(struct nvram_tuple) == sizeof(struct _nvram_tuple_abi_probe),
-               "FATAL: struct nvram_tuple layout changed — breaks libnvram.so ABI!");
+               "FATAL: struct nvram_tuple size changed — breaks 5.02hnd libnvram.so ABI!");
+_Static_assert(offsetof(struct nvram_tuple, next) == offsetof(struct _nvram_tuple_abi_probe, next),
+               "FATAL: struct nvram_tuple.next offset changed — breaks 5.02hnd libnvram.so ABI!");
 #endif
 
 #elif defined(__aarch64__)

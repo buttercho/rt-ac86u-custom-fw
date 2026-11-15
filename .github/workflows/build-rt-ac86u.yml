@@ -95,6 +95,7 @@ jobs:
           docker run --rm \
             -e LC_ALL=en_US.UTF-8 \
             -e LANG=en_US.UTF-8 \
+            -e FORCE_UNSAFE_CONFIGURE=1 \
             -v "${GITHUB_WORKSPACE}/asuswrt-merlin.ng:/workspace/build/asuswrt-merlin.ng" \
             -v "/tmp/am-toolchains/brcm-arm-hnd:/opt/toolchains:ro" \
             -w /workspace/build/asuswrt-merlin.ng/release/src-rt-5.02hnd \
@@ -104,6 +105,7 @@ jobs:
       - name: Immediately purge cferom bootloader image
         run: |
           TARGET_OUT="${GITHUB_WORKSPACE}/asuswrt-merlin.ng/release/src-rt-5.02hnd/targets/94908HND"
+          sudo chown -R "$(id -u):$(id -g)" "${TARGET_OUT}" || true
           rm -fv "${TARGET_OUT}"/*cferom*
           ls -lh "${TARGET_OUT}"/*_ubi.w
 

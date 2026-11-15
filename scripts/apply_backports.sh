@@ -180,6 +180,18 @@ if [[ "${MODE}" == "full" ]]; then
         git -C "${MERLIN_DIR}" checkout "${MERLIN_388_COMMIT}" -- "${rel_path}"
     done
 
+    # Normalize wget 1.25.0 version metadata (3004.388 NEWS is 1.25.0 while .tarball-version stayed 1.24.5)
+    if [[ -f "${MERLIN_DIR}/release/src/router/wget/NEWS" ]] && grep -q '1\.25\.0' "${MERLIN_DIR}/release/src/router/wget/NEWS"; then
+        printf '1.25.0\n' > "${MERLIN_DIR}/release/src/router/wget/.tarball-version"
+        if [[ -f "${MERLIN_DIR}/release/src/router/wget/configure" ]]; then
+            sed -i \
+                -e "s/PACKAGE_VERSION='1\.24\.5'/PACKAGE_VERSION='1.25.0'/g" \
+                -e "s/PACKAGE_STRING='wget 1\.24\.5'/PACKAGE_STRING='wget 1.25.0'/g" \
+                -e 's/ VERSION="1\.24\.5"/ VERSION="1.25.0"/g' \
+                "${MERLIN_DIR}/release/src/router/wget/configure"
+        fi
+    fi
+
     # Fail-closed sanity assertions on 3004.388 backports
     grep -q '(MAXDNAME \* 2) + 1' "${MERLIN_DIR}/release/src/router/dnsmasq/src/dnsmasq.h" \
         || { echo "FATAL: dnsmasq union bigname overflow fix missing!" >&2; exit 1; }
@@ -228,21 +240,73 @@ with zipfile.ZipFile(zip_path) as zf:
     tar -xzf "${TMP_DL}/openvpn-base.tar.gz" --strip-components=1 -C "${TMP_DL}/ovpn-stock-base"
     tar -xzf "${TMP_DL}/openvpn-new.tar.gz" --strip-components=1 -C "${TMP_DL}/ovpn-new"
 
-    # Extract exact diff of Merlin customizations inside src/ against stock 2.6.12
-    diff -uNr "${TMP_DL}/ovpn-stock-base/src" "${MERLIN_DIR}/release/src/router/openvpn/src" \
-        > "${TMP_DL}/merlin-openvpn-src.patch" || true
-    if [[ -s "${TMP_DL}/merlin-openvpn-src.patch" ]]; then
-        echo "  -> Re-applying Merlin custom OpenVPN src/ patch onto OpenVPN ${OPENVPN_NEW_VER}..."
-        patch -p1 --fuzz=0 -d "${TMP_DL}/ovpn-new/src" < <(
-            sed -e "s|^--- ${TMP_DL}/ovpn-stock-base/src/|--- a/|" \
-                -e "s|^+++ ${MERLIN_DIR}/release/src/router/openvpn/src/|+++ b/|" \
-                "${TMP_DL}/merlin-openvpn-src.patch"
+    # Preserve Merlin's autogen.sh (absent from upstream make dist tarballs, needed by Makefile)
+    cp -p "${MERLIN_DIR}/release/src/router/openvpn/autogen.sh" "${TMP_DL}/ovpn-new/autogen.sh"
+    chmod +x "${TMP_DL}/ovpn-new/autogen.sh"
+
+    # Extract exact .c/.h and Makefile.am diffs only (ignoring Automake Makefile.in drift)
+    # and copy Merlin-only source files (e.g., src/openvpn/clinat.{c,h}) into ovpn-new/src.
+    python3 - "${TMP_DL}/ovpn-stock-base/src" "${MERLIN_DIR}/release/src/router/openvpn/src" "${TMP_DL}/ovpn-new/src" "${TMP_DL}/merlin-openvpn-c.patch" "${TMP_DL}/merlin-openvpn-am.patch" <<'PYEOF'
+import os, shutil, subprocess, sys
+
+base_src, merlin_src, new_src, c_patch_path, am_patch_path = sys.argv[1:6]
+c_chunks, am_chunks = [], []
+
+for root, _dirs, files in os.walk(merlin_src):
+    for fn in sorted(files):
+        if not (fn.endswith(".c") or fn.endswith(".h") or fn == "Makefile.am"):
+            continue
+        merlin_f = os.path.join(root, fn)
+        rel = os.path.relpath(merlin_f, merlin_src)
+        base_f = os.path.join(base_src, rel)
+        if not os.path.exists(base_f):
+            dst_f = os.path.join(new_src, rel)
+            os.makedirs(os.path.dirname(dst_f), exist_ok=True)
+            shutil.copy2(merlin_f, dst_f)
+            print(f"  -> Copied Merlin-only OpenVPN file: src/{rel}")
+            continue
+        proc = subprocess.run(
+            ["diff", "-u", "--label", f"a/{rel}", base_f, "--label", f"b/{rel}", merlin_f],
+            capture_output=True,
+            text=True,
         )
+        if proc.returncode not in (0, 1):
+            raise SystemExit(f"FATAL: diff failed for {rel}: {proc.stderr}")
+        if proc.returncode == 1:
+            if fn == "Makefile.am":
+                am_chunks.append(proc.stdout)
+            else:
+                c_chunks.append(proc.stdout)
+
+with open(c_patch_path, "w", encoding="utf-8") as fh:
+    fh.write("".join(c_chunks))
+with open(am_patch_path, "w", encoding="utf-8") as fh:
+    fh.write("".join(am_chunks))
+print(f"  -> Extracted OpenVPN diffs: {len(c_chunks)} .c/.h file(s), {len(am_chunks)} Makefile.am file(s)")
+PYEOF
+
+    if [[ -s "${TMP_DL}/merlin-openvpn-c.patch" ]]; then
+        echo "  -> Re-applying Merlin custom OpenVPN .c/.h patch onto OpenVPN ${OPENVPN_NEW_VER}..."
+        patch -p1 --no-backup-if-mismatch --fuzz=0 -d "${TMP_DL}/ovpn-new/src" < "${TMP_DL}/merlin-openvpn-c.patch"
+    fi
+    if [[ -s "${TMP_DL}/merlin-openvpn-am.patch" ]]; then
+        echo "  -> Re-applying Merlin custom OpenVPN Makefile.am patch onto OpenVPN ${OPENVPN_NEW_VER}..."
+        patch -p1 --no-backup-if-mismatch --fuzz=2 -d "${TMP_DL}/ovpn-new/src" < "${TMP_DL}/merlin-openvpn-am.patch"
+    fi
+    OVPN_ORIG_REJ="$(find "${TMP_DL}/ovpn-new" \( -name '*.orig' -o -name '*.rej' \) | head -n 10 || true)"
+    if [[ -n "${OVPN_ORIG_REJ}" ]]; then
+        echo "FATAL: Leftover .orig/.rej files in OpenVPN ${OPENVPN_NEW_VER} tree:" >&2
+        echo "${OVPN_ORIG_REJ}" >&2
+        exit 1
     fi
     rm -rf "${MERLIN_DIR}/release/src/router/openvpn"
     mv "${TMP_DL}/ovpn-new" "${MERLIN_DIR}/release/src/router/openvpn"
     grep -rq 'ASUSWRT' "${MERLIN_DIR}/release/src/router/openvpn/src" \
         || { echo "FATAL: Merlin #ifdef ASUSWRT hooks missing after OpenVPN upgrade!" >&2; exit 1; }
+    test -f "${MERLIN_DIR}/release/src/router/openvpn/src/openvpn/clinat.c" \
+        || { echo "FATAL: Merlin clinat.c missing after OpenVPN upgrade!" >&2; exit 1; }
+    test -x "${MERLIN_DIR}/release/src/router/openvpn/autogen.sh" \
+        || { echo "FATAL: Merlin openvpn/autogen.sh missing after OpenVPN upgrade!" >&2; exit 1; }
 
     echo "==> [Step 3/4] Applying surgical C security fixes (BusyBox udhcpc/tar, libxml2, libovpn)..."
     python3 - "${MERLIN_DIR}" <<'PYEOF'
