@@ -193,6 +193,18 @@ if [[ "${MODE}" == "full" ]]; then
         git -C "${MERLIN_DIR}" checkout "${MERLIN_388_COMMIT}" -- "${rel_path}"
     done
 
+    # Normalize wget 1.25.0 version metadata (3004.388 NEWS is 1.25.0 while .tarball-version stayed 1.24.5)
+    if [[ -f "${MERLIN_DIR}/release/src/router/wget/NEWS" ]] && grep -q '1\.25\.0' "${MERLIN_DIR}/release/src/router/wget/NEWS"; then
+        printf '1.25.0\n' > "${MERLIN_DIR}/release/src/router/wget/.tarball-version"
+        if [[ -f "${MERLIN_DIR}/release/src/router/wget/configure" ]]; then
+            sed -i \
+                -e "s/PACKAGE_VERSION='1\.24\.5'/PACKAGE_VERSION='1.25.0'/g" \
+                -e "s/PACKAGE_STRING='wget 1\.24\.5'/PACKAGE_STRING='wget 1.25.0'/g" \
+                -e 's/ VERSION="1\.24\.5"/ VERSION="1.25.0"/g' \
+                "${MERLIN_DIR}/release/src/router/wget/configure"
+        fi
+    fi
+
     # Fail-closed sanity assertions on 3004.388 backports
     grep -q '(MAXDNAME \* 2) + 1' "${MERLIN_DIR}/release/src/router/dnsmasq/src/dnsmasq.h" \
         || { echo "FATAL: dnsmasq union bigname overflow fix missing!" >&2; exit 1; }
@@ -288,11 +300,17 @@ PYEOF
 
     if [[ -s "${TMP_DL}/merlin-openvpn-c.patch" ]]; then
         echo "  -> Re-applying Merlin custom OpenVPN .c/.h patch onto OpenVPN ${OPENVPN_NEW_VER}..."
-        patch -p1 --fuzz=0 -d "${TMP_DL}/ovpn-new/src" < "${TMP_DL}/merlin-openvpn-c.patch"
+        patch -p1 --no-backup-if-mismatch --fuzz=0 -d "${TMP_DL}/ovpn-new/src" < "${TMP_DL}/merlin-openvpn-c.patch"
     fi
     if [[ -s "${TMP_DL}/merlin-openvpn-am.patch" ]]; then
         echo "  -> Re-applying Merlin custom OpenVPN Makefile.am patch onto OpenVPN ${OPENVPN_NEW_VER}..."
-        patch -p1 --fuzz=2 -d "${TMP_DL}/ovpn-new/src" < "${TMP_DL}/merlin-openvpn-am.patch"
+        patch -p1 --no-backup-if-mismatch --fuzz=2 -d "${TMP_DL}/ovpn-new/src" < "${TMP_DL}/merlin-openvpn-am.patch"
+    fi
+    OVPN_ORIG_REJ="$(find "${TMP_DL}/ovpn-new" \( -name '*.orig' -o -name '*.rej' \) | head -n 10 || true)"
+    if [[ -n "${OVPN_ORIG_REJ}" ]]; then
+        echo "FATAL: Leftover .orig/.rej files in OpenVPN ${OPENVPN_NEW_VER} tree:" >&2
+        echo "${OVPN_ORIG_REJ}" >&2
+        exit 1
     fi
     rm -rf "${MERLIN_DIR}/release/src/router/openvpn"
     mv "${TMP_DL}/ovpn-new" "${MERLIN_DIR}/release/src/router/openvpn"
