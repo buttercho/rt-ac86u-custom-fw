@@ -24,7 +24,7 @@ ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:strict_string_checks=1" \
 UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1" \
     "${TMP_BIN}/stage2_asan_runner"
 
-if gcc --help=optimizers 2>/dev/null | grep -q -- '-fanalyzer'; then
+if gcc --help=common 2>/dev/null | grep -q -- '-fanalyzer'; then
     echo "[stage2:fanalyzer] Running GCC interprocedural static analyzer (-O2 -fanalyzer -Werror)..."
     gcc -std=gnu11 -O2 -fanalyzer -Wall -Wextra -Werror \
         -c "${SCRIPT_DIR}/stage2_asan_unit_tests.c" \

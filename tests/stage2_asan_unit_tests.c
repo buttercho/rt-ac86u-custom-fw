@@ -51,9 +51,12 @@ static char *patched_fd2str_impl(int fd, mock_read_fn rfn) {
     ssize_t r;
 
     do {
-        buf = realloc(buf, count + 512);
-        if (!buf)
+        char *nbuf = realloc(buf, count + 512);
+        if (!nbuf) {
+            free(buf);
             return NULL;
+        }
+        buf = nbuf;
         r = rfn(fd, buf + count, 512);
         if (r < 0) {
             free(buf);
@@ -95,7 +98,8 @@ static void test_fd2str(void) {
     g_mock_call_idx = 0;
     g_mock_payload = "unused";
     g_mock_offset = 0;
-    assert(patched_fd2str_impl(42, test_mock_read) == NULL);
+    char *err_a = patched_fd2str_impl(42, test_mock_read);
+    assert(err_a == NULL);
 
     /* Case B: 1st chunk == 512 B succeeds, 2nd chunk fails with -1 -> clean free & NULL */
     char big[700];
@@ -105,7 +109,8 @@ static void test_fd2str(void) {
     g_mock_call_idx = 0;
     g_mock_payload = big;
     g_mock_offset = 0;
-    assert(patched_fd2str_impl(42, test_mock_read) == NULL);
+    char *err_b = patched_fd2str_impl(42, test_mock_read);
+    assert(err_b == NULL);
 
     /* Case C: multi-chunk 699-byte read succeeds and NUL-terminates cleanly */
     g_mock_fail_on_call = 0;
