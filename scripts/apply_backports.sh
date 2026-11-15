@@ -194,9 +194,43 @@ if [[ "${MODE}" == "full" ]]; then
 
     # Preserve pre-generated Autotools timestamps on 3004.388 dropbear (AC_PREREQ 2.70) & wget (automake 1.17)
     # so Ubuntu 20.04 (autoconf 2.69 / automake 1.16.1) never attempts spurious maintainer-mode regeneration
-    find "${MERLIN_DIR}/release/src/router/dropbear" \( -name 'configure' -o -name 'config.h.in' \) -exec touch {} +
-    touch "${MERLIN_DIR}/release/src/router/wget/aclocal.m4" "${MERLIN_DIR}/release/src/router/wget/configure"
-    find "${MERLIN_DIR}/release/src/router/wget" \( -name 'config.h.in*' -o -name 'Makefile.in' \) -exec touch {} +
+    python3 - "${MERLIN_DIR}" <<'PYEOF'
+import os, sys, time
+
+router_dir = os.path.join(sys.argv[1], "release/src/router")
+
+def stamp_package(pkg_dir: str, src_names: set[str], stages: list[tuple[set[str], float]]) -> None:
+    if not os.path.isdir(pkg_dir):
+        return
+    max_src = 0.0
+    paths_by_name: dict[str, list[str]] = {}
+    for root, _dirs, files in os.walk(pkg_dir):
+        for fn in files:
+            full = os.path.join(root, fn)
+            st = os.stat(full)
+            if fn in src_names or fn.endswith(".m4") or fn.endswith(".ac") or fn == "Makefile.am":
+                if fn != "aclocal.m4":
+                    max_src = max(max_src, st.st_mtime)
+            paths_by_name.setdefault(fn, []).append(full)
+    base = max(time.time(), max_src)
+    for target_names, offset in stages:
+        ts = base + offset
+        for fn, matched in paths_by_name.items():
+            if fn in target_names or any(fn.startswith(t[:-1]) for t in target_names if t.endswith("*")):
+                for full in matched:
+                    os.utime(full, (ts, ts))
+
+stamp_package(
+    os.path.join(router_dir, "dropbear"),
+    {"configure.ac", "configure.in"},
+    [({"aclocal.m4"}, 4.0), ({"configure"}, 5.0), ({"config.h.in", "stamp-h.in"}, 6.0)],
+)
+stamp_package(
+    os.path.join(router_dir, "wget"),
+    {"configure.ac", "Makefile.am", ".tarball-version"},
+    [({"aclocal.m4"}, 5.0), ({"configure"}, 6.0), ({"config.h.in*"}, 7.0), ({"Makefile.in"}, 8.0)],
+)
+PYEOF
 
     # Fail-closed sanity assertions on 3004.388 backports
     grep -q '(MAXDNAME \* 2) + 1' "${MERLIN_DIR}/release/src/router/dnsmasq/src/dnsmasq.h" \
@@ -478,6 +512,52 @@ patch_exact(
 \tif (len < 2048) {\t// Enforce >= 2048-bit DH PEM for OpenVPN 2.6.23 / OpenSSL SECLEVEL""",
     "libovpn >=2048-bit DH & fclose(fp) NULL guard"
 )
+
+# 5. OpenSSL 1.1.1 backported test/recordlentest.c calls OpenSSL 3.x TEST_skip() missing from testutil.h
+patch_exact(
+    "release/src/router/openssl-1.1/test/recordlentest.c",
+    """#ifdef OPENSSL_NO_AES
+    if (test->cipher_type == SHORT_AEAD_RECORD_AES)
+        return TEST_skip("AES is disabled");
+#endif
+#ifdef OPENSSL_NO_ARIA
+    if (test->cipher_type == SHORT_AEAD_RECORD_ARIA)
+        return TEST_skip("ARIA is disabled");
+#endif
+#if defined(OPENSSL_NO_CHACHA) || defined(OPENSSL_NO_POLY1305) \\
+    || defined(OPENSSL_NO_EC)
+    if (test->cipher_type == SHORT_AEAD_RECORD_CHACHA)
+        return TEST_skip("ChaCha20-Poly1305 or EC is disabled");
+#endif""",
+    """#ifdef OPENSSL_NO_AES
+    if (test->cipher_type == SHORT_AEAD_RECORD_AES)
+        { TEST_info("AES is disabled"); return 1; }
+#endif
+#ifdef OPENSSL_NO_ARIA
+    if (test->cipher_type == SHORT_AEAD_RECORD_ARIA)
+        { TEST_info("ARIA is disabled"); return 1; }
+#endif
+#if defined(OPENSSL_NO_CHACHA) || defined(OPENSSL_NO_POLY1305) \\
+    || defined(OPENSSL_NO_EC)
+    if (test->cipher_type == SHORT_AEAD_RECORD_CHACHA)
+        { TEST_info("ChaCha20-Poly1305 or EC is disabled"); return 1; }
+#endif""",
+    "openssl-1.1 recordlentest TEST_skip compat (TLS 1.2)"
+)
+patch_exact(
+    "release/src/router/openssl-1.1/test/recordlentest.c",
+    """#ifdef OPENSSL_NO_AES
+    return TEST_skip("AES is disabled");
+#endif""",
+    """#ifdef OPENSSL_NO_AES
+    { TEST_info("AES is disabled"); return 1; }
+#endif""",
+    "openssl-1.1 recordlentest TEST_skip compat (DTLS 1.2)"
+)
+recordlen_path = os.path.join(merlin, "release/src/router/openssl-1.1/test/recordlentest.c")
+with open(recordlen_path, "r", encoding="utf-8", errors="surrogateescape") as fh:
+    if "TEST_skip(" in fh.read():
+        raise SystemExit("FATAL: remaining TEST_skip( call in openssl-1.1/test/recordlentest.c!")
 PYEOF
 fi
 

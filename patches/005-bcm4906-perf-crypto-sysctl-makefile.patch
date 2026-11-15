@@ -20,7 +20,7 @@ index 1224f60..18cd6f0 100755
  
  #
 diff --git a/release/src/router/Makefile b/release/src/router/Makefile
-index a37974b..7552f6b 100644
+index a37974b..7496899 100644
 --- a/release/src/router/Makefile
 +++ b/release/src/router/Makefile
 @@ -2036,7 +2036,12 @@ reinstall:
@@ -37,12 +37,21 @@ index a37974b..7552f6b 100644
  	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/ld-linux.so.3 $(INSTALLDIR)/lib/ld-linux.so.3
  	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/libresolv.so.2 $(INSTALLDIR)/lib/libresolv.so.2
  	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/libcrypt.so.1 $(INSTALLDIR)/lib/libcrypt.so.1
+@@ -3119,7 +3124,7 @@ openssl-1.1/Makefile:
+ 	$(if $(filter y,$(RTCONFIG_SFP) $(RTCONFIG_4M_SFP) $(RTCONFIG_8M_SFP)),-Os,-O2) \
+ 	$(if $(RTCONFIG_DEBUG),-g) \
+ 	-ffunction-sections -fdata-sections -Wl,--gc-sections \
+-	shared $(OPENSSL_CIPHERS) no-err no-async --api=1.0.0 \
++	shared $(OPENSSL_CIPHERS) no-tests no-err no-async --api=1.0.0 \
+ 	no-aria no-sm2 no-sm3 no-sm4 \
+ 	--with-rand-seed=devrandom \
+ 	$(if $(filter y,$(RTCONFIG_WTFAST)),-DRTCONFIG_WTFAST,) \
 @@ -3457,7 +3462,7 @@ dnsmasq:  $(if $(RTCONFIG_DNSSEC_OPENSSL),openssl,) $(if $(RTCONFIG_DNSSEC_NETTL
  		$(if $(RTCONFIG_USB_EXTRAS),,-DNO_TFTP) \
  		$(if $(RTCONFIG_DNSSEC_OPENSSL),-I$(TOP)/openssl/include -DHAVE_DNSSEC,) \
  		$(if $(RTCONFIG_DNSSEC_NETTLE),-I$(TOP)/nettle/include -I$(TOP)/gmp -DHAVE_DNSSEC -DHAVE_DNSSEC_STATIC -DNO_GOST,)" \
 -	CFLAGS="-Os -ffunction-sections -fdata-sections $(EXTRACFLAGS) -std=gnu99" \
-+	CFLAGS="-O2 -ffunction-sections -fdata-sections $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc+crypto -mtune=cortex-a53,$(EXTRACFLAGS)) -std=gnu99" \
++	CFLAGS="-O2 -ffunction-sections -fdata-sections $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc -mtune=cortex-a53,$(EXTRACFLAGS)) -std=gnu99" \
  	LDFLAGS="-ffunction-sections -fdata-sections -Wl,--gc-sections $(EXTRALDFLAGS) \
  		$(if $(RTCONFIG_DNSSEC_OPENSSL),-pthread -L$(TOP)/openssl,) \
  		$(if $(RTCONFIG_DNSSEC_NETTLE),-L$(TOP)/nettle/lib -L$(TOP)/gmp/.libs,)" \
@@ -58,17 +67,15 @@ index a37974b..7552f6b 100644
  endif
  
  miniupnpd: $(IPTABLES) e2fsprogs miniupnpd/config.h
-@@ -5121,14 +5126,14 @@ rstats: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
- rstats-install:
- 	$(MAKE) -C rstats INSTALLDIR=$(INSTALLDIR)/rstats install
+@@ -5123,12 +5128,12 @@ rstats-install:
  
--dropbear/config.h.in: $(if $(RTCONFIG_PROTECTION_SERVER),protect_srv-stage,)
-+dropbear/config.h.in: shared nvram $(if $(RTCONFIG_PROTECTION_SERVER),protect_srv-stage,)
+ dropbear/config.h.in: $(if $(RTCONFIG_PROTECTION_SERVER),protect_srv-stage,)
  
- dropbear/config.h: dropbear/config.h.in
+-dropbear/config.h: dropbear/config.h.in
++dropbear/config.h: $(wildcard dropbear/config.h.in dropbear/src/config.h.in) shared nvram$(BCMEX)$(EX7) $(if $(HND_ROUTER),wlcsm,) $(if $(RTCONFIG_PROTECTION_SERVER),protect_srv-stage,)
  	cd dropbear && \
 -		CPPFLAGS="-O2 -Wall $(EXTRACFLAGS) -DARGTYPE=3 -ffunction-sections -fdata-sections -I$(STAGEDIR)/usr/include \
-+		CPPFLAGS="-O2 -Wall $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc+crypto -mtune=cortex-a53,$(EXTRACFLAGS)) -DARGTYPE=3 -ffunction-sections -fdata-sections -I$(TOP)/shared -I$(SRCBASE)/include -I$(STAGEDIR)/usr/include \
++		CPPFLAGS="-O2 -Wall $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc -mtune=cortex-a53,$(EXTRACFLAGS)) -DARGTYPE=3 -ffunction-sections -fdata-sections -I$(TOP)/shared -I$(SRCBASE)/include -I$(STAGEDIR)/usr/include \
  			$(if $(RTCONFIG_PROTECTION_SERVER),-DSECURITY_NOTIFY,)" \
  		LDFLAGS="-Wl,--gc-sections -L$(STAGEDIR)/usr/lib" \
 -		LIBS="$(if $(RTCONFIG_PROTECTION_SERVER),-lptcsrv)" \
@@ -76,12 +83,21 @@ index a37974b..7552f6b 100644
  		$(CONFIGURE) --disable-harden --disable-zlib --disable-pam \
  		--enable-openpty --enable-syslog --enable-shadow --enable-bundled-libtom \
  		--disable-lastlog \
+@@ -5139,7 +5144,7 @@ dropbear/config.h: dropbear/config.h.in
+ 
+ dropbear: dropbear/config.h
+ 	@$(SEP)
+-	@$(MAKE) -C $@ PROGRAMS="dropbear dbclient dropbearkey scp" MULTI=1 IGNORE_SPEED=1 $(PARALLEL_BUILD)
++	@$(MAKE) -C $@ PROGRAMS="dropbear dbclient dropbearkey scp" MULTI=1 IGNORE_SPEED=1 AUTOCONF=true AUTOHEADER=true $(PARALLEL_BUILD)
+ 
+ dropbear-install:
+ 	install -D dropbear/dropbearmulti $(INSTALLDIR)/dropbear/usr/bin/dropbearmulti
 @@ -5187,7 +5192,7 @@ endif
  
  sqlite/stamp-h1:
  	cd sqlite && autoreconf -i -f && \
 -	CC=$(CC) CFLAGS="$(if $(RTCONFIG_DEBUG),-g -Wall,-Os) $(EXTRACFLAGS) -ffunction-sections -fdata-sections -fPIC" \
-+	CC=$(CC) CFLAGS="$(if $(RTCONFIG_DEBUG),-g -Wall,-O2) $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc+crypto -mtune=cortex-a53,$(EXTRACFLAGS)) -ffunction-sections -fdata-sections -fPIC" \
++	CC=$(CC) CFLAGS="$(if $(RTCONFIG_DEBUG),-g -Wall,-O2) $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc -mtune=cortex-a53,$(EXTRACFLAGS)) -ffunction-sections -fdata-sections -fPIC" \
  		LDFLAGS="-ffunction-sections -fdata-sections -Wl,--gc-sections -lpthread -ldl" \
  		$(CONFIGURE) --prefix=/usr --enable-shared --enable-static \
  		--disable-readline --disable-dynamic-extensions --enable-threadsafe \
@@ -90,7 +106,7 @@ index a37974b..7552f6b 100644
  zlib/stamp-h1:
  	cd zlib && \
 -	CC=$(CC) AR="ar rc" RANLIB=$(RANLIB) LD=$(LD) CFLAGS="-Os -Wall $(EXTRACFLAGS) -fPIC" LDSHAREDLIBC="$(EXTRALDFLAGS)" \
-+	CC=$(CC) AR="ar rc" RANLIB=$(RANLIB) LD=$(LD) CFLAGS="-O3 -Wall $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc+crypto -mtune=cortex-a53,$(EXTRACFLAGS)) -fPIC" LDSHAREDLIBC="$(EXTRALDFLAGS)" \
++	CC=$(CC) AR="ar rc" RANLIB=$(RANLIB) LD=$(LD) CFLAGS="-O3 -Wall $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc -mtune=cortex-a53,$(EXTRACFLAGS)) -fPIC" LDSHAREDLIBC="$(EXTRALDFLAGS)" \
  	./configure --shared --prefix=/usr --libdir=/usr/lib
  	touch $@
  
@@ -115,7 +131,7 @@ index a37974b..7552f6b 100644
  		LIBCAPNG_CFLAGS="-I$(TOP)/libcap-ng/src" \
  		LIBCAPNG_LIBS="-L$(TOP)/libcap-ng/src/.libs -lcap-ng" \
 -		CFLAGS="-O3 -Wall $(EXTRACFLAGS) -ffunction-sections -fdata-sections -std=gnu99 \
-+		CFLAGS="-O3 -Wall $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc+crypto -mtune=cortex-a53,$(EXTRACFLAGS)) -ffunction-sections -fdata-sections -std=gnu99 \
++		CFLAGS="-O3 -Wall $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc -mtune=cortex-a53,$(EXTRACFLAGS)) -ffunction-sections -fdata-sections -std=gnu99 \
  			-DASUSWRT -I$(TOP)/libcap-ng/src" \
  		LDFLAGS="$(EXTRALDFLAGS) -ffunction-sections -fdata-sections \
  			-Wl,--gc-sections \
@@ -141,7 +157,7 @@ index a37974b..7552f6b 100644
  		$(if $(RTCONFIG_WOLFSSL),--with-wolfssl=$(STAGEDIR)/usr,--without-wolfssl) \
  		--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt \
 -		CFLAGS="$(if $(RTCONFIG_DEBUG),-g,-Os) -Wall -ffunction-sections -fdata-sections" \
-+		CFLAGS="$(if $(RTCONFIG_DEBUG),-g,-O2) -Wall $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc+crypto -mtune=cortex-a53,$(EXTRACFLAGS)) -ffunction-sections -fdata-sections" \
++		CFLAGS="$(if $(RTCONFIG_DEBUG),-g,-O2) -Wall $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc -mtune=cortex-a53,$(EXTRACFLAGS)) -ffunction-sections -fdata-sections" \
  		CPPFLAGS="-I$(STAGEDIR)/usr/include" \
  		comma="," \
  		LDFLAGS="-Wl$(if $(RTCONFIG_TR069),$(comma)-rpath-link=$(STAGEDIR)/usr/lib,),--gc-sections \
@@ -153,7 +169,7 @@ index a37974b..7552f6b 100644
  			   $(if $(RTCONFIG_MBEDTLS),-lmbedcrypto -lmbedx509 -lmbedtls,) \
  			   $(if $(RTCONFIG_WOLFSSL),-lwolfssl,)"
  
-@@ -7111,7 +7114,7 @@ hndck:
+@@ -7111,18 +7114,22 @@ hndck:
  
  expat-2.0.1/stamp-h1:
  	cd $(TOP)/expat-2.0.1 && \
@@ -162,8 +178,10 @@ index a37974b..7552f6b 100644
  	touch $@
  
  expat-2.0.1: expat-2.0.1/stamp-h1
-@@ -7120,9 +7123,13 @@ expat-2.0.1: expat-2.0.1/stamp-h1
- 	sed 's|/usr/lib|$(STAGEDIR)/usr/lib|g' -i $(STAGEDIR)/usr/lib/libexpat.la
+ 	@$(SEP)
+ 	@$(MAKE) -C expat-2.0.1 $(PARALLEL_BUILD) && $(MAKE) $@-stage
+-	sed 's|/usr/lib|$(STAGEDIR)/usr/lib|g' -i $(STAGEDIR)/usr/lib/libexpat.la
++	[ ! -f $(STAGEDIR)/usr/lib/libexpat.la ] || sed 's|/usr/lib|$(STAGEDIR)/usr/lib|g' -i $(STAGEDIR)/usr/lib/libexpat.la
  
  expat-2.0.1-install:
 -	install -D expat-2.0.1/.libs/libexpat.so.1.5.2 $(INSTALLDIR)/expat-2.0.1/usr/lib/libexpat.so.1.5.2
