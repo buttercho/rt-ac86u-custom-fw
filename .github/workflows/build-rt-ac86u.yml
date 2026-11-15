@@ -1,0 +1,146 @@
+name: Build & Verify RT-AC86U Custom Firmware (386.14_2-sec2026)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_label:
+        description: "Artifact version suffix"
+        required: false
+        default: "sec2026"
+        type: string
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rt-ac86u-fw-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-verify-rt-ac86u:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    env:
+      MERLIN_BASE_COMMIT: "6a5df61aab6f3fa2dffc518994d42e4f2a27fb2b"
+      TOOLCHAIN_COMMIT: "d1af80e6b6686a4edc680386c09a8361453dd5c1"
+
+    steps:
+      - name: Reclaim runner SSD space & install verification tools
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils cppcheck curl git python3 python3-yaml qemu-user-static unzip
+          df -h
+
+      - name: Checkout custom patch & verification repository
+        uses: actions/checkout@v4
+        with:
+          path: custom-fw
+
+      - name: Checkout RMerl/asuswrt-merlin.ng pinned at 386.14_2
+        uses: actions/checkout@v4
+        with:
+          repository: RMerl/asuswrt-merlin.ng
+          ref: ${{ env.MERLIN_BASE_COMMIT }}
+          path: asuswrt-merlin.ng
+          fetch-depth: 1
+
+      - name: Apply 2024-2026 dependency backports & modular RT-AC86U patches
+        run: |
+          chmod +x "${GITHUB_WORKSPACE}/custom-fw/scripts/"*.sh "${GITHUB_WORKSPACE}/custom-fw/tests/"*.sh
+          "${GITHUB_WORKSPACE}/custom-fw/scripts/apply_backports.sh" "${GITHUB_WORKSPACE}/asuswrt-merlin.ng"
+
+      - name: Build Asuswrt-Merlin fw-build:20.04 container & fetch pinned HND GCC 5.3 toolchains
+        run: |
+          git clone --depth 1 https://github.com/Asuswrt-Merlin/am-buildtools.git "${GITHUB_WORKSPACE}/am-buildtools"
+          docker build --build-arg UBUNTU_VERSION=20.04 -t fw-build:20.04 "${GITHUB_WORKSPACE}/am-buildtools/docker"
+
+          mkdir -p /tmp/am-toolchains
+          cd /tmp/am-toolchains
+          git init
+          git remote add origin https://github.com/Asuswrt-Merlin/am-toolchains.git
+          git config core.sparseCheckout true
+          cat <<'EOF' > .git/info/sparse-checkout
+          brcm-arm-hnd/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/
+          brcm-arm-hnd/crosstools-aarch64-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/
+          EOF
+          git fetch --depth 1 origin "${TOOLCHAIN_COMMIT}"
+          git checkout FETCH_HEAD
+
+          docker run --rm \
+            -v "/tmp/am-toolchains/brcm-arm-hnd:/opt/toolchains:ro" \
+            fw-build:20.04 \
+            bash -c 'arm-buildroot-linux-gnueabi-gcc --version && aarch64-buildroot-linux-gnu-gcc --version'
+
+      - name: "STAGE 1 (Pre-Build): Patch, Struct ABI & Closed-Source .o Blob Contract Gate"
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/custom-fw:/workspace/custom-fw:ro" \
+            -v "${GITHUB_WORKSPACE}/asuswrt-merlin.ng:/workspace/build/asuswrt-merlin.ng:ro" \
+            -v "/tmp/am-toolchains/brcm-arm-hnd:/opt/toolchains:ro" \
+            fw-build:20.04 \
+            /workspace/custom-fw/tests/stage1_prebuild_gate.sh --already-patched /workspace/build/asuswrt-merlin.ng
+
+      - name: "STAGE 2 (Pre-Build): ASan + UBSan + GCC -fanalyzer + cppcheck Gate"
+        run: |
+          "${GITHUB_WORKSPACE}/custom-fw/tests/run_stage2_local_and_ci.sh" "${GITHUB_WORKSPACE}/asuswrt-merlin.ng"
+
+      - name: Compile RT-AC86U firmware inside fw-build:20.04 (make rt-ac86u)
+        run: |
+          docker run --rm \
+            -e LC_ALL=en_US.UTF-8 \
+            -e LANG=en_US.UTF-8 \
+            -v "${GITHUB_WORKSPACE}/asuswrt-merlin.ng:/workspace/build/asuswrt-merlin.ng" \
+            -v "/tmp/am-toolchains/brcm-arm-hnd:/opt/toolchains:ro" \
+            -w /workspace/build/asuswrt-merlin.ng/release/src-rt-5.02hnd \
+            fw-build:20.04 \
+            make rt-ac86u
+
+      - name: Immediately purge cferom bootloader image
+        run: |
+          TARGET_OUT="${GITHUB_WORKSPACE}/asuswrt-merlin.ng/release/src-rt-5.02hnd/targets/94908HND"
+          rm -fv "${TARGET_OUT}"/*cferom*
+          ls -lh "${TARGET_OUT}"/*_ubi.w
+
+      - name: "STAGE 3 (Post-Build): Full-RootFS ELF Linker, Symbol & Kernel .ko CRC Audit"
+        run: |
+          HND_ROOT="${GITHUB_WORKSPACE}/asuswrt-merlin.ng/release/src-rt-5.02hnd"
+          python3 "${GITHUB_WORKSPACE}/custom-fw/tests/stage3_rootfs_elf_ko_audit.py" \
+            --rootfs "${HND_ROOT}/targets/94908HND/fs.install" \
+            --symvers "${HND_ROOT}/kernel/linux-4.1/Module.symvers"
+
+      - name: "STAGE 4 (Post-Build): QEMU Cortex-A53 Emulated Daemon Smoke Suite"
+        run: |
+          HND_ROOT="${GITHUB_WORKSPACE}/asuswrt-merlin.ng/release/src-rt-5.02hnd"
+          "${GITHUB_WORKSPACE}/custom-fw/tests/stage4_qemu_smoke.sh" \
+            "${HND_ROOT}/targets/94908HND/fs.install" \
+            "${GITHUB_WORKSPACE}/asuswrt-merlin.ng"
+
+      - name: "STAGE 5 (Post-Build): Final _ubi.w Image Forensics & Release Manifest"
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
+          TARGET_OUT="${GITHUB_WORKSPACE}/asuswrt-merlin.ng/release/src-rt-5.02hnd/targets/94908HND"
+          FW_FILE="$(ls "${TARGET_OUT}"/RT-AC86U_*_ubi.w | head -n 1)"
+          cp -v "${FW_FILE}" "${GITHUB_WORKSPACE}/dist/"
+          cp -v "${GITHUB_WORKSPACE}/custom-fw/scripts/preflash_check_on_router.sh" "${GITHUB_WORKSPACE}/dist/"
+
+          DIST_FW="${GITHUB_WORKSPACE}/dist/$(basename "${FW_FILE}")"
+          python3 "${GITHUB_WORKSPACE}/custom-fw/tests/stage5_image_forensics.py" \
+            --image "${DIST_FW}" \
+            --target-dir "${TARGET_OUT}" \
+            --dist-dir "${GITHUB_WORKSPACE}/dist"
+
+          cat "${GITHUB_WORKSPACE}/dist/TEST_REPORT.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload verified RT-AC86U _ubi.w firmware & pre-flash toolkit
+        uses: actions/upload-artifact@v4
+        with:
+          name: RT-AC86U-386.14_2-${{ inputs.build_label || 'sec2026' }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,143 @@
+diff --git a/release/src/router/rstats/rstats.c b/release/src/router/rstats/rstats.c
+--- a/release/src/router/rstats/rstats.c
++++ b/release/src/router/rstats/rstats.c
+@@ -349,6 +349,11 @@
+ 	sprintf(hgz, "%s.gz", history_fn);
+ 
+ 	if (strcmp(save_path, "*nvram") == 0) {
++		/* Protect 128 KB (131072 B) NVRAM on RT-AC86U: auto-migrate *nvram to /jffs/ */
++		nvram_set("rstats_path", "/jffs/");
++		strlcpy(save_path, "/jffs/", sizeof(save_path));
++	}
++	if (0) {
+ 		if (!wait_action_idle(10)) {
+ 			//_dprintf("%s: busy, not saving\n", __FUNCTION__);
+ 			return;
+diff --git a/release/src/router/www/Tools_OtherSettings.asp b/release/src/router/www/Tools_OtherSettings.asp
+--- a/release/src/router/www/Tools_OtherSettings.asp
++++ b/release/src/router/www/Tools_OtherSettings.asp
+@@ -460,7 +460,8 @@
+ 	}
+ 	else if (rstats_loc === "*nvram")
+ 	{
+-		document.form.rstats_location.value = "2";
++		document.form.rstats_location.value = "1";
++		document.form.rstats_path.value = "/jffs/";
+ 	}
+ 	else
+ 	{
+@@ -529,10 +530,7 @@
+ 
+ 	showLoading();
+ 
+-	if (document.form.rstats_location.value == "2")
+-	{
+-		document.form.rstats_path.value = "*nvram";
+-	} else if (document.form.rstats_location.value == "0")
++	if (document.form.rstats_location.value == "0")
+ 	{
+ 		document.form.rstats_path.value = "";
+ 	}
+@@ -686,7 +684,6 @@
+ 							<select name="rstats_location" class="input_option" onchange="hide_rstats_storage(this.value);">
+ 								<option value="0">RAM (Default)</option>
+ 								<option value="1">Custom location</option>
+-								<option value="2">NVRAM</option>
+ 							</select>
+ 							<span id="invalid_location" style="display:none;" class="formfontdesc">Cannot use NVRAM if IPTraffic is enabled!</span>
+ 						</td>
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -20109,7 +20109,8 @@
+ 	f_write_string("/proc/sys/kernel/core_pattern", "/tmp/core-%e-%g-%p-%s-%t-%u", 0, 0);
+ 	f_write_string("/proc/sys/fs/suid_dumpable", "2", 0, 0);
+ #endif
+-	f_write_string("/proc/sys/kernel/print-fatal-signals", "1", 0, 0);
++	f_write_string("/proc/sys/kernel/print-fatal-signals",
++		nvram_get_int("print_fatal_signals") ? "1" : "0", 0, 0);
+ 
+ 	for (i = 0; i < sizeof(fatalsigs) / sizeof(fatalsigs[0]); i++) {
+ 		signal(fatalsigs[i], handle_fatalsigs);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -10951,9 +10951,18 @@
+ 	apcli_start();
+ #endif
+ 
++#ifdef HND_ROUTER
++	{
++		int nv_used = f_size("/data/.kernel_nvram.setting");
++		if (nv_used >= 114688)
++			logmessage("nvram", "WARNING: NVRAM usage %d / %d bytes (>= 87.5%%); prune large client/DHCP lists", nv_used, NVRAM_SPACE);
++	}
++#endif
+ #if defined(RTCONFIG_BWDPI)
+-	start_bwdpi_check();
+-	start_hour_monitor_service();
++	if (nvram_get_int("TM_EULA") == 1) {
++		start_bwdpi_check();
++		start_hour_monitor_service();
++	}
+ #endif
+ #ifdef RTCONFIG_CONNTRACK
+ 	start_pctime_service();
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -159,7 +159,7 @@
+ 
+ //#if defined(RTCONFIG_JFFS2LOG) && defined(RTCONFIG_JFFS2)
+ #if defined(RTCONFIG_JFFS2LOG) && (defined(RTCONFIG_JFFS2)||defined(RTCONFIG_BRCM_NAND_JFFS2))
+-#define LOG_COMMIT_PERIOD	2		/* 2 x 30 seconds */
++#define LOG_COMMIT_PERIOD	60		/* 60 x 30 seconds = 30 minutes default */
+ static int log_commit_count = 0;
+ #endif
+ #if defined(RTCONFIG_USB_MODEM)
+@@ -7552,27 +7552,34 @@
+ #if defined(RTCONFIG_JFFS2LOG) && (defined(RTCONFIG_JFFS2)||defined(RTCONFIG_BRCM_NAND_JFFS2))
+ void syslog_commit_check(void)
+ {
+-	struct stat tmp_log_stat, jffs_log_stat;
++	struct stat tmp_log_stat, jffs_log_stat, tmp_rot_stat, jffs_rot_stat;
+ 	int tmp_stat, jffs_stat;
+-	char prefix[PATH_MAX], path1[PATH_MAX];
++	char prefix[PATH_MAX], path1[PATH_MAX], path2[PATH_MAX];
++	int period = nvram_get("jffs2_log_period") ? nvram_get_int("jffs2_log_period") : LOG_COMMIT_PERIOD;
++
++	if (period <= 0)
++		return; /* 0 = keep syslog in /tmp RAM; stop_syslogd() still syncs on clean reboot */
+ 
+ 	snprintf(prefix, sizeof(prefix), "%s", nvram_safe_get("log_path"));
+ 	snprintf(path1, sizeof(path1), "%s/syslog.log", prefix);
++	snprintf(path2, sizeof(path2), "%s/syslog.log-1", prefix);
+ 
+ 	tmp_stat = stat("/tmp/syslog.log", &tmp_log_stat);
+ 	if (tmp_stat == -1)
+ 		return;
+ 
+-	if (++log_commit_count >= LOG_COMMIT_PERIOD) {
++	if (++log_commit_count >= period) {
+ 		jffs_stat = stat(path1, &jffs_log_stat);
+-		if ( jffs_stat == -1) {
+-			eval("cp", "/tmp/syslog.log", "/tmp/syslog.log-1", prefix);
+-			return;
+-		}
+-
+-		if ( tmp_log_stat.st_size > jffs_log_stat.st_size ||
+-		     difftime(tmp_log_stat.st_mtime, jffs_log_stat.st_mtime) > 0)
+-			eval("cp", "/tmp/syslog.log", "/tmp/syslog.log-1", prefix);
++		if (jffs_stat == -1 ||
++		    tmp_log_stat.st_size != jffs_log_stat.st_size ||
++		    difftime(tmp_log_stat.st_mtime, jffs_log_stat.st_mtime) > 0)
++			eval("cp", "-f", "/tmp/syslog.log", path1);
++
++		if (stat("/tmp/syslog.log-1", &tmp_rot_stat) == 0 &&
++		    (stat(path2, &jffs_rot_stat) == -1 ||
++		     tmp_rot_stat.st_size != jffs_rot_stat.st_size ||
++		     difftime(tmp_rot_stat.st_mtime, jffs_rot_stat.st_mtime) > 0))
++			eval("cp", "-f", "/tmp/syslog.log-1", path2);
+ 
+ 		log_commit_count = 0;
+ 	}
