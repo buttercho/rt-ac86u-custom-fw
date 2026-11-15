@@ -110,21 +110,36 @@ jobs:
 
       - name: Compile RT-AC86U firmware inside fw-build:20.04 (make rt-ac86u)
         run: |
-          docker run --rm \
-            -e LC_ALL=en_US.UTF-8 \
-            -e LANG=en_US.UTF-8 \
-            -e FORCE_UNSAFE_CONFIGURE=1 \
+          set -o pipefail
+          mkdir -p /tmp/fw-home
+          if ! docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -v /etc/passwd:/etc/passwd:ro \
+            -v /etc/group:/etc/group:ro \
+            -v /tmp/fw-home:/home/runner \
+            -e HOME=/home/runner \
+            -e USER="$(id -un)" \
+            -e LC_ALL=C.UTF-8 \
+            -e LANG=C.UTF-8 \
             -v "${GITHUB_WORKSPACE}/asuswrt-merlin.ng:/workspace/build/asuswrt-merlin.ng" \
             -v "/tmp/am-toolchains/brcm-arm-hnd:/opt/toolchains:ro" \
             -w /workspace/build/asuswrt-merlin.ng/release/src-rt-5.02hnd \
             fw-build:20.04 \
-            make rt-ac86u
+            make rt-ac86u 2>&1 | tee /tmp/fw-build.log; then
+            echo "::error::make rt-ac86u failed — last error lines:"
+            grep -E "(: error:|undefined reference|Error [0-9]+|ERROR:|FATAL:)" /tmp/fw-build.log | tail -n 15 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done || true
+            tail -n 60 /tmp/fw-build.log || true
+            exit 1
+          fi
 
       - name: Immediately purge cferom bootloader image
         run: |
-          TARGET_OUT="${GITHUB_WORKSPACE}/asuswrt-merlin.ng/release/src-rt-5.02hnd/targets/94908HND"
+          HND_ROOT="${GITHUB_WORKSPACE}/asuswrt-merlin.ng/release/src-rt-5.02hnd"
+          TARGET_OUT="${HND_ROOT}/targets/94908HND"
           sudo chown -R "$(id -u):$(id -g)" "${TARGET_OUT}" || true
-          rm -fv "${TARGET_OUT}"/*cferom*
+          rm -fv "${TARGET_OUT}"/*cferom* "${HND_ROOT}/image"/*cferom* 2>/dev/null || true
           ls -lh "${TARGET_OUT}"/*_ubi.w
 
       - name: "STAGE 3 (Post-Build): Full-RootFS ELF Linker, Symbol & Kernel .ko CRC Audit"
