@@ -1,7 +1,8 @@
 diff --git a/release/src-rt-5.02hnd/kernel/linux-4.1/config_base.6a b/release/src-rt-5.02hnd/kernel/linux-4.1/config_base.6a
+index 1224f60..18cd6f0 100755
 --- a/release/src-rt-5.02hnd/kernel/linux-4.1/config_base.6a
 +++ b/release/src-rt-5.02hnd/kernel/linux-4.1/config_base.6a
-@@ -2475,7 +2475,14 @@
+@@ -2475,7 +2475,15 @@ CONFIG_CRYPTO_LZO=y
  # CONFIG_CRYPTO_USER_API_SKCIPHER is not set
  # CONFIG_CRYPTO_USER_API_RNG is not set
  # CONFIG_CRYPTO_HW is not set
@@ -13,68 +14,16 @@ diff --git a/release/src-rt-5.02hnd/kernel/linux-4.1/config_base.6a b/release/sr
 +CONFIG_CRYPTO_AES_ARM64_CE=y
 +CONFIG_CRYPTO_AES_ARM64_CE_CCM=y
 +CONFIG_CRYPTO_AES_ARM64_CE_BLK=y
++# CONFIG_CRYPTO_AES_ARM64_NEON_BLK is not set
 +CONFIG_CRYPTO_CRC32_ARM64=y
  # CONFIG_BINARY_PRINTF is not set
  
  #
-diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
---- a/release/src/router/shared/defaults.c
-+++ b/release/src/router/shared/defaults.c
-@@ -1814,8 +1814,8 @@
- 
- 	// make sure its purpose
- 	// advanced-ctnf
--	{ "ct_tcp_timeout", "", CKN_STR100, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
--	{ "ct_udp_timeout", "30 180", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
-+	{ "ct_tcp_timeout", "0 7440 60 30 60 60 10 60 30 0", CKN_STR100, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
-+	{ "ct_udp_timeout", "30 120", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
- 	{ "ct_timeout", "", CKN_STR20, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
- 
- #ifdef RTCONFIG_AMAS
-@@ -4464,7 +4464,8 @@
- 
- /* Merlin-specific settings */
- 
--	{ "ct_max", "300000", CKN_STR6, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 }, //All the models we support would default to this value
-+	{ "ct_max", "65536", CKN_STR6, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 }, //Right-sized for 512 MB HND SLUB safety
-+	{ "ct_hashsize", "16384", CKN_STR6, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
- 	{ "dns_fwd_local", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	// Forward queries for local domain to upstream DNS server
- 	{ "dhcp_dns2_x", "", CKN_STR15, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
- 	{ "dhcpd_querylog", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
-diff --git a/release/src/router/rc/sysdeps/init-broadcom.c b/release/src/router/rc/sysdeps/init-broadcom.c
---- a/release/src/router/rc/sysdeps/init-broadcom.c
-+++ b/release/src/router/rc/sysdeps/init-broadcom.c
-@@ -5204,11 +5204,12 @@
- 	eval("insmod", "hnd");
- #endif
- 
--	//tweak UDP socket buffer
--	f_write_string("/proc/sys/net/core/wmem_default", "524288", 0, 0);
--	f_write_string("/proc/sys/net/core/wmem_max", "524288", 0, 0);
--	f_write_string("/proc/sys/net/core/rmem_default", "524288", 0, 0);
--	f_write_string("/proc/sys/net/core/rmem_max", "524288", 0, 0);
-+	//tweak UDP/TCP socket buffers & VFS reclaim pressure for 512 MB BCM4906
-+	f_write_string("/proc/sys/net/core/wmem_default", "262144", 0, 0);
-+	f_write_string("/proc/sys/net/core/wmem_max", "1048576", 0, 0);
-+	f_write_string("/proc/sys/net/core/rmem_default", "262144", 0, 0);
-+	f_write_string("/proc/sys/net/core/rmem_max", "1048576", 0, 0);
-+	f_write_string("/proc/sys/vm/vfs_cache_pressure", "150", 0, 0);
- 
- #ifdef GTAC2900
- 	update_cfe_ac2900();
-@@ -5216,6 +5217,8 @@
- #if defined(RTAC86U) || defined(GTAC2900)
- 	if (!nvram_get_int("cpu_wait"))
- 		system("pwr config --wait off");
-+	else
-+		system("pwr config --wait on");
- #endif
- #if defined(RTAX88U) || defined(RTAX92U)
- 	if(nvram_match("HwVer", "1.0")) {
 diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index a37974b..7552f6b 100644
 --- a/release/src/router/Makefile
 +++ b/release/src/router/Makefile
-@@ -2036,7 +2036,12 @@
+@@ -2036,7 +2036,12 @@ reinstall:
  
  	# extra install in case build-process skip them
  # why precompiled?
@@ -88,7 +37,7 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/ld-linux.so.3 $(INSTALLDIR)/lib/ld-linux.so.3
  	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/libresolv.so.2 $(INSTALLDIR)/lib/libresolv.so.2
  	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/libcrypt.so.1 $(INSTALLDIR)/lib/libcrypt.so.1
-@@ -3457,7 +3462,7 @@
+@@ -3457,7 +3462,7 @@ dnsmasq:  $(if $(RTCONFIG_DNSSEC_OPENSSL),openssl,) $(if $(RTCONFIG_DNSSEC_NETTL
  		$(if $(RTCONFIG_USB_EXTRAS),,-DNO_TFTP) \
  		$(if $(RTCONFIG_DNSSEC_OPENSSL),-I$(TOP)/openssl/include -DHAVE_DNSSEC,) \
  		$(if $(RTCONFIG_DNSSEC_NETTLE),-I$(TOP)/nettle/include -I$(TOP)/gmp -DHAVE_DNSSEC -DHAVE_DNSSEC_STATIC -DNO_GOST,)" \
@@ -97,20 +46,19 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  	LDFLAGS="-ffunction-sections -fdata-sections -Wl,--gc-sections $(EXTRALDFLAGS) \
  		$(if $(RTCONFIG_DNSSEC_OPENSSL),-pthread -L$(TOP)/openssl,) \
  		$(if $(RTCONFIG_DNSSEC_NETTLE),-L$(TOP)/nettle/lib -L$(TOP)/gmp/.libs,)" \
-@@ -3754,9 +3759,9 @@
+@@ -3754,9 +3759,9 @@ iptables-1.4.x-clean:
  
  miniupnpd/config.h: shared/version.h
  ifeq ($(RTCONFIG_IGD2),y)
 -	cd miniupnpd && ./configure --vendorcfg --leasefile $(if $(RTCONFIG_IPV6),--ipv6,) --igd2 --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES)
--else
--	cd miniupnpd && ./configure --vendorcfg --leasefile --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES)
 +	cd miniupnpd && ./configure --vendorcfg --leasefile --disable-pppconn $(if $(RTCONFIG_IPV6),--ipv6,) --igd2 --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES)
-+else
+ else
+-	cd miniupnpd && ./configure --vendorcfg --leasefile --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES)
 +	cd miniupnpd && ./configure --vendorcfg --leasefile --disable-pppconn --portinuse $(if $(RTCONFIG_AURASYNC),--aurasync,) $(if $(RTCONFIG_GEFORCENOW),--nvgfn) --iptablespath=$(TOP)/$(IPTABLES)
  endif
  
  miniupnpd: $(IPTABLES) e2fsprogs miniupnpd/config.h
-@@ -5121,14 +5126,14 @@
+@@ -5121,14 +5126,14 @@ rstats: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
  rstats-install:
  	$(MAKE) -C rstats INSTALLDIR=$(INSTALLDIR)/rstats install
  
@@ -128,7 +76,7 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  		$(CONFIGURE) --disable-harden --disable-zlib --disable-pam \
  		--enable-openpty --enable-syslog --enable-shadow --enable-bundled-libtom \
  		--disable-lastlog \
-@@ -5187,7 +5192,7 @@
+@@ -5187,7 +5192,7 @@ endif
  
  sqlite/stamp-h1:
  	cd sqlite && autoreconf -i -f && \
@@ -137,7 +85,7 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  		LDFLAGS="-ffunction-sections -fdata-sections -Wl,--gc-sections -lpthread -ldl" \
  		$(CONFIGURE) --prefix=/usr --enable-shared --enable-static \
  		--disable-readline --disable-dynamic-extensions --enable-threadsafe \
-@@ -5387,7 +5392,7 @@
+@@ -5387,7 +5392,7 @@ endif
  
  zlib/stamp-h1:
  	cd zlib && \
@@ -146,7 +94,7 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  	./configure --shared --prefix=/usr --libdir=/usr/lib
  	touch $@
  
-@@ -6147,11 +6152,10 @@
+@@ -6147,11 +6152,10 @@ lz4:
  	$(MAKE) -C $@ $(PARALLEL_BUILD)
  
  libcap-ng/configure:
@@ -162,33 +110,33 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  	touch $@
  
  libcap-ng: libcap-ng/configure
-@@ -6215,7 +6219,7 @@
- 	$(MAKE) -C $@ $(PARALLEL_BUILD)
- 
- openvpn/Makefile:
--	( cd openvpn ; ./autogen.sh ; \
-+	( cd openvpn ; ( [ -x ./configure ] || ./autogen.sh ) ; \
- 		OPENSSL_CFLAGS="-I$(TOP)/openssl/include" \
- 		OPENSSL_LIBS="-L$(TOP)/openssl/ -lcrypto -lssl" \
- 		LIBPAM_CFLAGS="-I$(TOP)/openpam/include" \
-@@ -6226,7 +6230,8 @@
+@@ -6226,7 +6230,7 @@ openvpn/Makefile:
  		LZ4_LIBS="-L$(TOP)/lz4/lib -llz4" \
  		LIBCAPNG_CFLAGS="-I$(TOP)/libcap-ng/src" \
  		LIBCAPNG_LIBS="-L$(TOP)/libcap-ng/src/.libs -lcap-ng" \
 -		CFLAGS="-O3 -Wall $(EXTRACFLAGS) -ffunction-sections -fdata-sections -std=gnu99 \
-+		RST2MAN=true \
 +		CFLAGS="-O3 -Wall $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc+crypto -mtune=cortex-a53,$(EXTRACFLAGS)) -ffunction-sections -fdata-sections -std=gnu99 \
  			-DASUSWRT -I$(TOP)/libcap-ng/src" \
  		LDFLAGS="$(EXTRALDFLAGS) -ffunction-sections -fdata-sections \
  			-Wl,--gc-sections \
-@@ -6771,13 +6776,13 @@
+@@ -6759,7 +6763,7 @@ libssh2-clean:
+ curl/configure:
+ 	@cd curl && autoreconf -fi
+ 
+-curl/Makefile: curl/configure
++curl/Makefile: $(if $(RTCONFIG_OPENSSL11)$(RTCONFIG_OPENSSL10),openssl,) $(if $(RTCONFIG_TR069),libssh2,) curl/configure
+ 	@cd curl && $(CONFIGURE) CC=$(CC) \
+ 		--prefix=/usr --bindir=/usr/sbin --libdir=/usr/lib \
+ 		--enable-silent-rules \
+@@ -6771,20 +6775,19 @@ curl/Makefile: curl/configure
  		--disable-gopher \
  		--disable-manual --disable-libcurl-option $(if $(RTCONFIG_IPV6),--enable-ipv6,--disable-ipv6) \
  		--disable-threaded-resolver --disable-ntlm-wb \
 -		--disable-doh --disable-netrc --disable-dnsshuffle \
 +		--disable-doh --disable-netrc --disable-dnsshuffle --without-libpsl \
  		$(if $(RTCONFIG_TR069),--with-libssh2=$(STAGEDIR)/usr,--without-zlib) \
- 		$(if $(RTCONFIG_OPENSSL11)$(RTCONFIG_OPENSSL10),--with-ssl=$(TOP)/openssl --with-ca-fallback,--without-ssl) \
+-		$(if $(RTCONFIG_OPENSSL11)$(RTCONFIG_OPENSSL10),--with-ssl=$(TOP)/openssl --with-ca-fallback,--without-ssl) \
++		$(if $(RTCONFIG_OPENSSL11)$(RTCONFIG_OPENSSL10),--with-ssl=$(STAGEDIR)/usr --with-ca-fallback,--without-ssl) \
  		$(if $(RTCONFIG_MBEDTLS),--with-mbedtls=$(STAGEDIR)/usr,--without-mbedtls) \
  		$(if $(RTCONFIG_WOLFSSL),--with-wolfssl=$(STAGEDIR)/usr,--without-wolfssl) \
  		--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt \
@@ -197,7 +145,15 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  		CPPFLAGS="-I$(STAGEDIR)/usr/include" \
  		comma="," \
  		LDFLAGS="-Wl$(if $(RTCONFIG_TR069),$(comma)-rpath-link=$(STAGEDIR)/usr/lib,),--gc-sections \
-@@ -7111,7 +7116,7 @@
+ 			   -Wl$(if $(RTCONFIG_TR069),$(comma)-rpath=$(STAGEDIR)/usr/lib,),--gc-sections \
+ 			   $(LDFLAGS) -L$(STAGEDIR)/usr/lib" \
+-		LIBS="-ldl $(if $(RTCONFIG_OPENSSL11),-lpthread,) \
+-			   $(if $(RTCONFIG_OPENSSL11)$(RTCONFIG_OPENSSL10),-lcrypto -lssl,) \
++		LIBS="-ldl $(if $(RTCONFIG_OPENSSL11),-lssl -lcrypto -lpthread,$(if $(RTCONFIG_OPENSSL10),-lssl -lcrypto,)) $(if $(RTCONFIG_TR069),-lssh2 -lz,) \
+ 			   $(if $(RTCONFIG_MBEDTLS),-lmbedcrypto -lmbedx509 -lmbedtls,) \
+ 			   $(if $(RTCONFIG_WOLFSSL),-lwolfssl,)"
+ 
+@@ -7111,7 +7114,7 @@ hndck:
  
  expat-2.0.1/stamp-h1:
  	cd $(TOP)/expat-2.0.1 && \
@@ -206,7 +162,7 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  	touch $@
  
  expat-2.0.1: expat-2.0.1/stamp-h1
-@@ -7120,9 +7125,13 @@
+@@ -7120,9 +7123,13 @@ expat-2.0.1: expat-2.0.1/stamp-h1
  	sed 's|/usr/lib|$(STAGEDIR)/usr/lib|g' -i $(STAGEDIR)/usr/lib/libexpat.la
  
  expat-2.0.1-install:
@@ -223,7 +179,7 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  
  expat-2.0.1-clean:
  	-@$(MAKE) -C expat-2.0.1 clean
-@@ -7462,10 +7471,11 @@
+@@ -7462,10 +7469,11 @@ GeoIP-1.6.2-clean:
  	@rm -f GeoIP-1.6.2/stamp-h1
  
  wget/Makefile.in: wget/Makefile.am
@@ -231,8 +187,74 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 +	cd wget && if automake --version 2>/dev/null | head -n1 | grep -qE "1\.(1[7-9]|[2-9][0-9])"; then autoreconf -fi; else touch aclocal.m4 configure Makefile.in src/Makefile.in doc/Makefile.in lib/Makefile.in util/Makefile.in 2>/dev/null || true; fi
  
  wget/Makefile: wget/Makefile.in
- 	cd wget && $(CONFIGURE) \
-+		ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true \
+-	cd wget && $(CONFIGURE) \
++	cd wget && touch aclocal.m4 configure Makefile.in src/Makefile.in && $(CONFIGURE) \
++		ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true MAKEINFO=true \
  		--with-ssl=openssl --prefix=/usr --sysconfdir=/etc \
  		--disable-opie --disable-ntlm --disable-debug --disable-nls --disable-rpath \
  		$(if $(RTCONFIG_IPV6),,--disable-ipv6) --disable-iri --without-included-regex  \
+@@ -7478,7 +7486,7 @@ wget/Makefile: wget/Makefile.in
+ 		LDFLAGS="$(EXTRALDFLAGS) -Wl,--gc-sections -L$(STAGEDIR)/usr/lib -pthread"
+ 
+ wget: openssl zlib wget/Makefile
+-	$(MAKE) -C $@ $(PARALLEL_BUILD)
++	$(MAKE) -C $@ $(PARALLEL_BUILD) ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true MAKEINFO=true
+ 
+ wget-clean:
+ 	[ ! -f wget/Makefile ] || $(MAKE) -C wget distclean
+diff --git a/release/src/router/rc/sysdeps/init-broadcom.c b/release/src/router/rc/sysdeps/init-broadcom.c
+index f86d374..fd22b38 100644
+--- a/release/src/router/rc/sysdeps/init-broadcom.c
++++ b/release/src/router/rc/sysdeps/init-broadcom.c
+@@ -5204,11 +5204,12 @@ void init_others(void)
+ 	eval("insmod", "hnd");
+ #endif
+ 
+-	//tweak UDP socket buffer
+-	f_write_string("/proc/sys/net/core/wmem_default", "524288", 0, 0);
+-	f_write_string("/proc/sys/net/core/wmem_max", "524288", 0, 0);
+-	f_write_string("/proc/sys/net/core/rmem_default", "524288", 0, 0);
+-	f_write_string("/proc/sys/net/core/rmem_max", "524288", 0, 0);
++	//tweak UDP/TCP socket buffers & VFS reclaim pressure for 512 MB BCM4906
++	f_write_string("/proc/sys/net/core/wmem_default", "262144", 0, 0);
++	f_write_string("/proc/sys/net/core/wmem_max", "1048576", 0, 0);
++	f_write_string("/proc/sys/net/core/rmem_default", "262144", 0, 0);
++	f_write_string("/proc/sys/net/core/rmem_max", "1048576", 0, 0);
++	f_write_string("/proc/sys/vm/vfs_cache_pressure", "150", 0, 0);
+ 
+ #ifdef GTAC2900
+ 	update_cfe_ac2900();
+@@ -5216,6 +5217,8 @@ void init_others(void)
+ #if defined(RTAC86U) || defined(GTAC2900)
+ 	if (!nvram_get_int("cpu_wait"))
+ 		system("pwr config --wait off");
++	else
++		system("pwr config --wait on");
+ #endif
+ #if defined(RTAX88U) || defined(RTAX92U)
+ 	if(nvram_match("HwVer", "1.0")) {
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 0a342d0..bf4e283 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -1814,8 +1814,8 @@ struct nvram_tuple router_defaults[] = {
+ 
+ 	// make sure its purpose
+ 	// advanced-ctnf
+-	{ "ct_tcp_timeout", "", CKN_STR100, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "ct_udp_timeout", "30 180", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "ct_tcp_timeout", "0 7440 60 30 60 60 10 60 30 0", CKN_STR100, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "ct_udp_timeout", "30 120", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "ct_timeout", "", CKN_STR20, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+ #ifdef RTCONFIG_AMAS
+@@ -4464,7 +4464,8 @@ struct nvram_tuple router_defaults[] = {
+ 
+ /* Merlin-specific settings */
+ 
+-	{ "ct_max", "300000", CKN_STR6, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 }, //All the models we support would default to this value
++	{ "ct_max", "65536", CKN_STR6, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 }, //Right-sized for 512 MB HND SLUB safety
++	{ "ct_hashsize", "16384", CKN_STR6, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "dns_fwd_local", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	// Forward queries for local domain to upstream DNS server
+ 	{ "dhcp_dns2_x", "", CKN_STR15, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "dhcpd_querylog", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },

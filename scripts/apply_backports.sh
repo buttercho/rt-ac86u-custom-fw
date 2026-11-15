@@ -192,6 +192,12 @@ if [[ "${MODE}" == "full" ]]; then
         fi
     fi
 
+    # Preserve pre-generated Autotools timestamps on 3004.388 dropbear (AC_PREREQ 2.70) & wget (automake 1.17)
+    # so Ubuntu 20.04 (autoconf 2.69 / automake 1.16.1) never attempts spurious maintainer-mode regeneration
+    find "${MERLIN_DIR}/release/src/router/dropbear" \( -name 'configure' -o -name 'config.h.in' \) -exec touch {} +
+    touch "${MERLIN_DIR}/release/src/router/wget/aclocal.m4" "${MERLIN_DIR}/release/src/router/wget/configure"
+    find "${MERLIN_DIR}/release/src/router/wget" \( -name 'config.h.in*' -o -name 'Makefile.in' \) -exec touch {} +
+
     # Fail-closed sanity assertions on 3004.388 backports
     grep -q '(MAXDNAME \* 2) + 1' "${MERLIN_DIR}/release/src/router/dnsmasq/src/dnsmasq.h" \
         || { echo "FATAL: dnsmasq union bigname overflow fix missing!" >&2; exit 1; }
