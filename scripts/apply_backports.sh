@@ -411,11 +411,12 @@ patch_exact(
     """\tcase S_IFLNK:
 \t\t/* Symlink (with NULL & CVE-2026-108119 unsafe target rejection) */
 \t\tif (!file_header->link_target
-\t\t || (!(archive_handle->ah_flags & ARCHIVE_EXTRACT_UNCONDITIONAL)
-\t\t     && (file_header->link_target[0] == '/'
-\t\t         || strcmp(file_header->link_target, "..") == 0
-\t\t         || strncmp(file_header->link_target, "../", 3) == 0
-\t\t         || strstr(file_header->link_target, "/../") != NULL))
+\t\t || file_header->link_target[0] == '/'
+\t\t || strcmp(file_header->link_target, "..") == 0
+\t\t || strncmp(file_header->link_target, "../", 3) == 0
+\t\t || strstr(file_header->link_target, "/../") != NULL
+\t\t || (strlen(file_header->link_target) >= 3
+\t\t     && strcmp(file_header->link_target + strlen(file_header->link_target) - 3, "/..") == 0)
 \t\t) {
 \t\t\tbb_error_msg("skipping unsafe symlink %s", dst_name);
 \t\t\tbreak;
