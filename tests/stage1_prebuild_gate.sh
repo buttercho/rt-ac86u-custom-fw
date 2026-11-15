@@ -46,6 +46,9 @@ if [[ "${ALREADY_PATCHED}" -eq 0 ]]; then
     APPLY_SET2="${APPLY_SET2}" python3 "${SCRIPT_DIR}/check_blob_contracts.py" \
         --merlin-dir "${MERLIN_DIR}" \
         --patch-dir "${PATCH_DIR}"
+    APPLY_SET2="${APPLY_SET2}" python3 "${SCRIPT_DIR}/audit_build_graph.py" \
+        --merlin-dir "${MERLIN_DIR}" \
+        --patch-dir "${PATCH_DIR}"
 else
     echo "[stage1:git] Checking for .rej / .orig merge artifacts..."
     REJ_FILES="$(find "${MERLIN_DIR}/release" \( -name '*.rej' -o -name '*.orig' \) 2>/dev/null | head -n 20 || true)"
@@ -55,6 +58,10 @@ else
         exit 1
     fi
     APPLY_SET2="${APPLY_SET2}" python3 "${SCRIPT_DIR}/check_blob_contracts.py" \
+        --merlin-dir "${MERLIN_DIR}" \
+        --patch-dir "${PATCH_DIR}" \
+        --already-patched
+    APPLY_SET2="${APPLY_SET2}" python3 "${SCRIPT_DIR}/audit_build_graph.py" \
         --merlin-dir "${MERLIN_DIR}" \
         --patch-dir "${PATCH_DIR}" \
         --already-patched
@@ -68,15 +75,21 @@ TMP_OBJ="$(mktemp -d -t stage1_abi_XXXXXX)"
 trap 'rm -rf "${TMP_OBJ}"' EXIT
 
 if [[ -n "${ARM_GCC}" ]]; then
-    echo "[stage1:abi] Verifying 32-bit HND ARM soft-float & struct nvram_tuple ABI via ${ARM_GCC}..."
+    echo "[stage1:abi] Verifying 32-bit HND ARM soft-float, -march=armv8-a+crc & struct nvram_tuple ABI via ${ARM_GCC}..."
     NVRAM_INC="${MERLIN_DIR}/release/src-rt-5.02hnd/bcmdrivers/broadcom/net/wl/impl51/main/src/include"
     EXTRA_INC=()
     if [[ -f "${NVRAM_INC}/bcmnvram.h" ]]; then
         EXTRA_INC=(-DCHECK_MERLIN_HEADERS -I"${NVRAM_INC}")
     fi
     "${ARM_GCC}" -std=gnu11 -mabi=aapcs-linux -marm -msoft-float -ffixed-r8 \
+        -march=armv8-a+crc -mtune=cortex-a53 \
         "${EXTRA_INC[@]}" -Wall -Werror -c "${SCRIPT_DIR}/abi_asserts.c" -o "${TMP_OBJ}/abi32.o"
-    echo "[stage1:abi] PASS: 32-bit ARM EABI5 soft-float & nvram ABI assertions passed."
+    echo "[stage1:abi] PASS: 32-bit ARM EABI5 soft-float, -march=armv8-a+crc & nvram ABI assertions passed."
+    if [[ "${ALREADY_PATCHED}" -eq 1 ]]; then
+        python3 "${SCRIPT_DIR}/stage1_syntax_preflight.py" \
+            --merlin-dir "${MERLIN_DIR}" \
+            --cc "${ARM_GCC}"
+    fi
 else
     echo "[stage1:abi] Host mode (arm-buildroot-linux-gnueabi-gcc not in PATH; will run inside fw-build CI container)."
 fi
