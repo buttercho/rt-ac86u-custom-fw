@@ -9,12 +9,17 @@ FW_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PATCH_DIR="${FW_ROOT}/patches"
 
 ALREADY_PATCHED=0
+APPLY_SET2="${APPLY_SET2:-1}"
 MERLIN_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --already-patched)
             ALREADY_PATCHED=1
+            shift
+            ;;
+        --set1-only)
+            APPLY_SET2=0
             shift
             ;;
         *)
@@ -24,19 +29,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+export APPLY_SET2
+
 if [[ -z "${MERLIN_DIR}" || ! -d "${MERLIN_DIR}" ]]; then
-    echo "Usage: $0 [--already-patched] <path-to-asuswrt-merlin.ng>" >&2
+    echo "Usage: $0 [--already-patched] [--set1-only] <path-to-asuswrt-merlin.ng>" >&2
     exit 1
 fi
 
 MERLIN_DIR="$(cd "${MERLIN_DIR}" && pwd)"
 echo "======================================================================"
-echo "STAGE 1: Pre-Build Patch, Struct ABI & Closed-Source Blob Contract Gate"
+echo "STAGE 1: Pre-Build Patch, Struct ABI & Closed-Source Blob Contract Gate (APPLY_SET2=${APPLY_SET2})"
 echo "======================================================================"
 
 if [[ "${ALREADY_PATCHED}" -eq 0 ]]; then
-    "${FW_ROOT}/scripts/apply_backports.sh" --check-only "${MERLIN_DIR}"
-    python3 "${SCRIPT_DIR}/check_blob_contracts.py" \
+    APPLY_SET2="${APPLY_SET2}" "${FW_ROOT}/scripts/apply_backports.sh" --check-only "${MERLIN_DIR}"
+    APPLY_SET2="${APPLY_SET2}" python3 "${SCRIPT_DIR}/check_blob_contracts.py" \
         --merlin-dir "${MERLIN_DIR}" \
         --patch-dir "${PATCH_DIR}"
 else
@@ -47,7 +54,7 @@ else
         echo "${REJ_FILES}" >&2
         exit 1
     fi
-    python3 "${SCRIPT_DIR}/check_blob_contracts.py" \
+    APPLY_SET2="${APPLY_SET2}" python3 "${SCRIPT_DIR}/check_blob_contracts.py" \
         --merlin-dir "${MERLIN_DIR}" \
         --patch-dir "${PATCH_DIR}" \
         --already-patched

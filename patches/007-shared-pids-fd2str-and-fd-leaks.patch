@@ -1,0 +1,588 @@
+diff --git a/release/src/router/libdisk/usb_info.c b/release/src/router/libdisk/usb_info.c
+index 1bd1c59..575d37b 100644
+--- a/release/src/router/libdisk/usb_info.c
++++ b/release/src/router/libdisk/usb_info.c
+@@ -2337,8 +2337,10 @@ char *find_sg_of_device(const char *device_name, char *buf, const int buf_size)
+ 		if(strncmp(file->d_name, "sg", 2))
+ 			continue;
+ 
+-		if(get_usb_port_by_device(file->d_name, check_usb_port, sizeof(check_usb_port)) == NULL)
++		if(get_usb_port_by_device(file->d_name, check_usb_port, sizeof(check_usb_port)) == NULL) {
++			closedir(dp);
+ 			return NULL;
++		}
+ 
+ 		if(!strcmp(target_usb_port, check_usb_port)){
+ 			snprintf(buf, buf_size, "%s", file->d_name);
+diff --git a/release/src/router/libdisk/write_smb_conf.c b/release/src/router/libdisk/write_smb_conf.c
+index 1959154..1db60cd 100644
+--- a/release/src/router/libdisk/write_smb_conf.c
++++ b/release/src/router/libdisk/write_smb_conf.c
+@@ -106,10 +106,10 @@ int check_existed_share(const char *string)
+ 	FILE *tp;
+ 	char buf[PATH_MAX], target[256];
+ 
+-	if((tp = fopen(SAMBA_CONF, "r")) == NULL)
++	if(string == NULL || strlen(string) <= 0)
+ 		return 0;
+ 
+-	if(string == NULL || strlen(string) <= 0)
++	if((tp = fopen(SAMBA_CONF, "r")) == NULL)
+ 		return 0;
+ 
+ 	snprintf(target, sizeof(target), "[%s]", string);
+@@ -361,8 +361,8 @@ int main(int argc, char *argv[])
+ //	fprintf(fp, "mangling method = hash2\n");	// ASUS add
+ 	fprintf(fp, "wide links = no\n"); 		// ASUS add
+ 	fprintf(fp, "bind interfaces only = yes\n");	// ASUS add
+-	snprintf(br0_ll, "%s", getifaddr(nvram_safe_get("lan_ifname"), AF_INET6, GIF_LINKLOCAL) ? : "");
+-	snprintf(br0_unicast, "%s", getifaddr(nvram_safe_get("lan_ifname"), AF_INET6, 0) ? : "");
++	snprintf(br0_ll, sizeof(br0_ll), "%s", getifaddr(nvram_safe_get("lan_ifname"), AF_INET6, GIF_LINKLOCAL) ? : "");
++	snprintf(br0_unicast, sizeof(br0_unicast), "%s", getifaddr(nvram_safe_get("lan_ifname"), AF_INET6, 0) ? : "");
+ 
+ 	if (strlen(br0_ll))
+ 		snprintf(br0_ll_str, sizeof(br0_ll_str), "%s%%%s/%d", br0_ll, nvram_safe_get("lan_ifname"), ipv6_prefix_len(nvram_safe_get("lan_ifname")));
+diff --git a/release/src/router/shared/misc.c b/release/src/router/shared/misc.c
+index 919d75b..9f50c52 100644
+--- a/release/src/router/shared/misc.c
++++ b/release/src/router/shared/misc.c
+@@ -4114,7 +4114,10 @@ int get_iface_hwaddr(char *name, unsigned char *hwaddr)
+ int __set_iface_ps(const char *ifname, int nr_rx_mask, const unsigned int *rx_mask, int nr_tx_mask, const unsigned int *tx_mask)
+ {
+ 	const char *attr[] = { "rps_cpus", "xps_cpus" };
+-	int q, max_q = nr_rx_mask? nr_rx_mask : 32;
++	int q;
++	int max_rx_q = (nr_rx_mask > 0) ? nr_rx_mask : ((nr_rx_mask == 0) ? 32 : 0);
++	int max_tx_q = (nr_tx_mask > 0) ? nr_tx_mask : ((nr_tx_mask == 0) ? 32 : 0);
++	int max_q = (max_rx_q > max_tx_q) ? max_rx_q : max_tx_q;
+ 	char rx_m[16], tx_m[16];
+ 	char prefix[sizeof("/sys/class/net/ethXXXXXX/queues")], path[sizeof("/sys/class/net/ethXXXXXX/queuese/tx-0/xps_cpusYYYYYY")];
+ 
+@@ -4128,21 +4131,20 @@ int __set_iface_ps(const char *ifname, int nr_rx_mask, const unsigned int *rx_ma
+ 		return -2;
+ 
+ 	snprintf(prefix, sizeof(prefix), "%s/%s/queues", SYS_CLASS_NET, ifname);
+-	if (nr_rx_mask >= 0)
++	if (nr_rx_mask == 0)
+ 		snprintf(rx_m, sizeof(rx_m), "%x", rx_mask[0]);
+-	if (nr_tx_mask >= 0)
++	if (nr_tx_mask == 0)
+ 		snprintf(tx_m, sizeof(tx_m), "%x", tx_mask[0]);
+ 	for (q = 0; q < max_q; ++q) {
+-		if (nr_rx_mask > 0)
+-			snprintf(rx_m, sizeof(rx_m), "%x", *(rx_m + q));
+-		if (nr_tx_mask > 0)
+-			snprintf(tx_m, sizeof(tx_m), "%x", *(tx_m + q));
+-
+-		if (nr_rx_mask >= 0) {
++		if (nr_rx_mask >= 0 && q < max_rx_q) {
++			if (nr_rx_mask > 0)
++				snprintf(rx_m, sizeof(rx_m), "%x", rx_mask[q]);
+ 			snprintf(path, sizeof(path), "%s/rx-%d/%s", prefix, q, attr[0]);
+ 			f_write_string(path, rx_m, 0, 0);
+ 		}
+-		if (nr_tx_mask >= 0) {
++		if (nr_tx_mask >= 0 && q < max_tx_q) {
++			if (nr_tx_mask > 0)
++				snprintf(tx_m, sizeof(tx_m), "%x", tx_mask[q]);
+ 			snprintf(path, sizeof(path), "%s/tx-%d/%s", prefix, q, attr[1]);
+ 			f_write_string(path, tx_m, 0, 0);
+ 		}
+diff --git a/release/src/router/shared/network_utility.c b/release/src/router/shared/network_utility.c
+index 2ed7e7c..d626a7e 100644
+--- a/release/src/router/shared/network_utility.c
++++ b/release/src/router/shared/network_utility.c
+@@ -171,7 +171,7 @@ int is_ip4_in_use(const char* addr)
+ 		return 0;
+ 	}
+ 
+-	fd = socket(AF_INET, SOCK_DGRAM, 0);
++	fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+ 	if (fd < 0) {
+ 		perror("socket()");
+ 		return 0;
+@@ -181,6 +181,7 @@ int is_ip4_in_use(const char* addr)
+ 	ifconf.ifc_buf = buf;
+ 	if (ioctl(fd, SIOCGIFCONF, &ifconf) != 0) {
+ 		perror("ioctl(SIOCGIFCONF)");
++		close(fd);
+ 		return 0;
+ 	}
+ 
+@@ -189,12 +190,14 @@ int is_ip4_in_use(const char* addr)
+ 		if( ((struct sockaddr_in*)&ifreq->ifr_addr)->sin_addr.s_addr == ipaddr.s_addr ) {
+ 			//char text[16];
+ 			//cprintf("ifr %s: %s\n", ifreq->ifr_name, inet_ntop(AF_INET, &(((struct sockaddr_in*)&ifreq->ifr_addr)->sin_addr), text, sizeof(text)));
++			close(fd);
+ 			return 1;
+ 		}
+ 
+ 		ifreq = (struct ifreq*)((char*)ifreq + sizeof(*ifreq));
+ 	}
+ 
++	close(fd);
+ 	return 0;
+ }
+ 
+diff --git a/release/src/router/shared/pids.c b/release/src/router/shared/pids.c
+index 1884c96..1417166 100644
+--- a/release/src/router/shared/pids.c
++++ b/release/src/router/shared/pids.c
+@@ -112,13 +112,20 @@ typedef struct procps_status_t {
+          * by link target or interpreter name) */
+         char comm[16];
+         /* user/group? - use passwd/group parsing functions */
++        char cmdline_buf[PROCPS_BUFSIZE];
+ } procps_status_t;
+ 
+ static procps_status_t* alloc_procps_scan(void)
+ {
+ 	unsigned n = getpagesize();
+ 	procps_status_t* sp = calloc(1, sizeof(procps_status_t));
++	if (!sp)
++		return NULL;
+ 	sp->dir = opendir("/proc");
++	if (!sp->dir) {
++		free(sp);
++		return NULL;
++	}
+ 	while (1) {
+ 		n >>= 1;
+ 		if (!n) break;
+@@ -188,8 +195,14 @@ void* xrealloc_vector_helper(void *vector, unsigned sizeof_and_shift, int idx)
+         int mask = 1 << (unsigned char)sizeof_and_shift;
+ 
+         if (!(idx & (mask - 1))) {
++                void *new_vec;
+                 sizeof_and_shift >>= 8; /* sizeof(vector[0]) */
+-                vector = realloc(vector, sizeof_and_shift * (idx + mask + 1));
++                new_vec = realloc(vector, sizeof_and_shift * (idx + mask + 1));
++                if (!new_vec) {
++                        free(vector);
++                        return NULL;
++                }
++                vector = new_vec;
+                 memset((char*)vector + (sizeof_and_shift * idx), 0, sizeof_and_shift * (mask + 1));
+         }
+         return vector;
+@@ -200,8 +213,12 @@ void* xrealloc_vector_helper(void *vector, unsigned sizeof_and_shift, int idx)
+ 
+ void free_procps_scan(procps_status_t* sp)
+ {
+-	closedir(sp->dir);
+-	free(sp->argv0);
++	if (!sp)
++		return;
++	if (sp->dir)
++		closedir(sp->dir);
++	if (sp->argv0 && sp->argv0 != sp->cmdline_buf)
++		free(sp->argv0);
+ 	free(sp);
+ }
+ 
+@@ -218,6 +235,8 @@ procps_status_t* procps_scan(procps_status_t* sp, int flags)
+ 
+ 	if (!sp)
+ 		sp = alloc_procps_scan();
++	if (!sp || !sp->dir)
++		return NULL;
+ 
+ 	for (;;) {
+ 		entry = readdir(sp->dir);
+@@ -265,66 +284,71 @@ procps_status_t* procps_scan(procps_status_t* sp, int flags)
+ 			if (sizeof(sp->comm) < 16)
+ 				BUG_comm_size();
+ 			comm1 = strchr(buf, '(');
+-			/*if (comm1)*/
+-				strncpy(sp->comm, comm1 + 1, sizeof(sp->comm));
+-
+-			n = sscanf(cp+2,
+-				"%c %u "               /* state, ppid */
+-				"%u %u %d %*s "        /* pgid, sid, tty, tpgid */
+-				"%*s %*s %*s %*s %*s " /* flags, min_flt, cmin_flt, maj_flt, cmaj_flt */
+-				"%lu %lu "             /* utime, stime */
+-				"%*s %*s %*s "         /* cutime, cstime, priority */
+-				"%ld "                 /* nice */
+-				"%*s %*s "             /* timeout, it_real_value */
+-				"%lu "                 /* start_time */
+-				"%lu "                 /* vsize */
+-				"%lu "                 /* rss */
+-			/*	"%lu %lu %lu %lu %lu %lu " rss_rlim, start_code, end_code, start_stack, kstk_esp, kstk_eip */
+-			/*	"%u %u %u %u "         signal, blocked, sigignore, sigcatch */
+-			/*	"%lu %lu %lu"          wchan, nswap, cnswap */
+-				,
+-				sp->state, &sp->ppid,
+-				&sp->pgid, &sp->sid, &tty,
+-				&sp->utime, &sp->stime,
+-				&tasknice,
+-				&sp->start_time,
+-				&vsz,
+-				&rss);
+-			if (n != 11)
++			if (!cp || !comm1 || cp[1] != ' ' || cp[2] == '\0')
+ 				break;
+-			/* vsz is in bytes and we want kb */
+-			sp->vsz = vsz >> 10;
+-			/* vsz is in bytes but rss is in *PAGES*! Can you believe that? */
+-			sp->rss = rss << sp->shift_pages_to_kb;
+-			sp->tty_major = (tty >> 8) & 0xfff;
+-			sp->tty_minor = (tty & 0xff) | ((tty >> 12) & 0xfff00);
+-
+-			if (sp->vsz == 0 && sp->state[0] != 'Z')
+-				sp->state[1] = 'W';
+-			else
+-				sp->state[1] = ' ';
+-			if (tasknice < 0)
+-				sp->state[2] = '<';
+-			else if (tasknice) /* > 0 */
+-				sp->state[2] = 'N';
+-			else
+-				sp->state[2] = ' ';
++			strncpy(sp->comm, comm1 + 1, sizeof(sp->comm) - 1);
++			sp->comm[sizeof(sp->comm) - 1] = '\0';
+ 
++			if (!(flags & ~(PSSCAN_PID | PSSCAN_COMM | PSSCAN_STATE | PSSCAN_ARGVN))) {
++				sp->state[0] = cp[2];
++				sp->state[1] = '\0';
++			} else {
++				n = sscanf(cp+2,
++					"%c %u "               /* state, ppid */
++					"%u %u %d %*s "        /* pgid, sid, tty, tpgid */
++					"%*s %*s %*s %*s %*s " /* flags, min_flt, cmin_flt, maj_flt, cmaj_flt */
++					"%lu %lu "             /* utime, stime */
++					"%*s %*s %*s "         /* cutime, cstime, priority */
++					"%ld "                 /* nice */
++					"%*s %*s "             /* timeout, it_real_value */
++					"%lu "                 /* start_time */
++					"%lu "                 /* vsize */
++					"%lu "                 /* rss */
++					,
++					sp->state, &sp->ppid,
++					&sp->pgid, &sp->sid, &tty,
++					&sp->utime, &sp->stime,
++					&tasknice,
++					&sp->start_time,
++					&vsz,
++					&rss);
++				if (n != 11)
++					break;
++				/* vsz is in bytes and we want kb */
++				sp->vsz = vsz >> 10;
++				/* vsz is in bytes but rss is in *PAGES*! Can you believe that? */
++				sp->rss = rss << sp->shift_pages_to_kb;
++				sp->tty_major = (tty >> 8) & 0xfff;
++				sp->tty_minor = (tty & 0xff) | ((tty >> 12) & 0xfff00);
++
++				if (sp->vsz == 0 && sp->state[0] != 'Z')
++					sp->state[1] = 'W';
++				else
++					sp->state[1] = ' ';
++				if (tasknice < 0)
++					sp->state[2] = '<';
++				else if (tasknice) /* > 0 */
++					sp->state[2] = 'N';
++				else
++					sp->state[2] = ' ';
++			}
+ 		}
+ 
+ 		if (flags & (PSSCAN_ARGV0|PSSCAN_ARGVN)) {
+-			free(sp->argv0);
++			if (sp->argv0 && sp->argv0 != sp->cmdline_buf)
++				free(sp->argv0);
+ 			sp->argv0 = NULL;
+ 			strcpy(filename_tail, "/cmdline");
+-			n = read_to_buf(filename, buf);
+-			if (n <= 0)
+-				break;
+ 			if (flags & PSSCAN_ARGVN) {
++				n = read_to_buf(filename, sp->cmdline_buf);
++				if (n <= 0)
++					break;
+ 				sp->argv_len = n;
+-				sp->argv0 = malloc(n + 1);
+-				memcpy(sp->argv0, buf, n + 1);
+-				/* sp->argv0[n] = '\0'; - buf has it */
++				sp->argv0 = sp->cmdline_buf;
+ 			} else {
++				n = read_to_buf(filename, buf);
++				if (n <= 0)
++					break;
+ 				sp->argv_len = 0;
+ 				sp->argv0 = strdup(buf);
+ 			}
+@@ -388,17 +412,23 @@ pid_t* find_pid_by_name(const char *procName)
+ 	procps_status_t* p = NULL;
+ 
+ 	pidList = calloc(1, sizeof(*pidList));
++	if (!pidList)
++		return NULL;
+ 	while ((p = procps_scan(p, PSSCAN_PID|PSSCAN_COMM|PSSCAN_ARGVN))) {
++		if (p->state[0] == 'Z')
++			continue;
+ 		if (comm_match(p, procName)
+ 		/* or we require argv0 to match (essential for matching reexeced /proc/self/exe)*/
+ 		 || (p->argv0 && strcmp(bb_basename(p->argv0), procName) == 0)
+ 		/* TOOD: we can also try /proc/NUM/exe link, do we want that? */
+ 		) {
+-			if (p->state[0] != 'Z')
+-			{
+-				pidList = xrealloc_vector(pidList, 2, i);
+-				pidList[i++] = p->pid;
++			pid_t *nextList = xrealloc_vector(pidList, 2, i);
++			if (!nextList) {
++				free_procps_scan(p);
++				return NULL;
+ 			}
++			pidList = nextList;
++			pidList[i++] = p->pid;
+ 		}
+ 	}
+ 
+@@ -425,20 +455,75 @@ int pids_main(char *appname)
+ 	return count;
+ }
+ 
+-int pids(char *appname)
++static int find_first_pid_by_name(const char *procName)
+ {
+-	pid_t *pidList;
+-	pid_t *pl;
+-	int count = 0;
++	DIR *dir;
++	struct dirent *entry;
++	char stat_buf[PROCPS_BUFSIZE], cmd_buf[PROCPS_BUFSIZE];
++	char filename[sizeof("/proc//cmdline") + sizeof(int) * 3];
+ 
+-	pidList = find_pid_by_name(appname);
+-	for (pl = pidList; *pl; pl++) {
+-		count++;
+-	}
+-	free(pidList);
++	if (!procName || !*procName)
++		return 0;
+ 
+-	if (count)
+-		return 1;
+-	else
++	dir = opendir("/proc");
++	if (!dir)
+ 		return 0;
++
++	while ((entry = readdir(dir)) != NULL) {
++		unsigned pid = bb_strtou(entry->d_name, NULL, 10);
++		char *tail, *comm1, *cp, state;
++		char comm[16];
++		int n, comm_prefix;
++
++		if (errno)
++			continue;
++
++		tail = filename + snprintf(filename, sizeof(filename), "/proc/%u", pid);
++		strcpy(tail, "/stat");
++		if (read_to_buf(filename, stat_buf) < 0)
++			continue;
++
++		cp = strrchr(stat_buf, ')');
++		comm1 = strchr(stat_buf, '(');
++		if (!cp || !comm1 || cp[1] != ' ' || cp[2] == '\0')
++			continue;
++		state = cp[2];
++		if (state == 'Z')
++			continue;
++
++		*cp = '\0';
++		strncpy(comm, comm1 + 1, sizeof(comm) - 1);
++		comm[sizeof(comm) - 1] = '\0';
++
++		comm_prefix = (strncmp(comm, procName, 15) == 0);
++		if (comm_prefix && comm[14] == '\0') {
++			closedir(dir);
++			return 1;
++		}
++
++		strcpy(tail, "/cmdline");
++		n = read_to_buf(filename, cmd_buf);
++		if (n <= 0)
++			continue;
++
++		if (comm_prefix) {
++			int argv1idx = (int)strlen(cmd_buf) + 1;
++			if (argv1idx < n && strcmp(bb_basename(cmd_buf + argv1idx), procName) == 0) {
++				closedir(dir);
++				return 1;
++			}
++		}
++		if (strcmp(bb_basename(cmd_buf), procName) == 0) {
++			closedir(dir);
++			return 1;
++		}
++	}
++
++	closedir(dir);
++	return 0;
++}
++
++int pids(char *appname)
++{
++	return find_first_pid_by_name(appname);
+ }
+diff --git a/release/src/router/shared/process.c b/release/src/router/shared/process.c
+index d872c5f..4c52fbb 100644
+--- a/release/src/router/shared/process.c
++++ b/release/src/router/shared/process.c
+@@ -63,6 +63,7 @@ static int _pidof(const char *name, pid_t **pids)
+ 	if ((p = strrchr(name, '/')) != NULL) name = p + 1;
+ 	if ((dir = opendir("/proc")) != NULL) {
+ 		while ((de = readdir(dir)) != NULL) {
++			pid_t *tmp_pids;
+ 			i = strtol(de->d_name, &e, 10);
+ 			if (*e != 0) continue;
+ 			if (strcmp(name, psname(i, buf, sizeof(buf))) == 0) {
+@@ -70,14 +71,18 @@ static int _pidof(const char *name, pid_t **pids)
+ 					count = i;
+ 					break;
+ 				}
+-				if ((*pids = realloc(*pids, sizeof(pid_t) * (count + 1))) == NULL) {
++				if ((tmp_pids = realloc(*pids, sizeof(pid_t) * (count + 1))) == NULL) {
++					free(*pids);
++					*pids = NULL;
++					closedir(dir);
+ 					return -1;
+ 				}
++				*pids = tmp_pids;
+ 				(*pids)[count++] = i;
+ 			}
+ 		}
++		closedir(dir);
+ 	}
+-	closedir(dir);
+ 	return count;
+ }
+ 
+diff --git a/release/src/router/shared/shutils.c b/release/src/router/shared/shutils.c
+index 5f1697e..f375e28 100644
+--- a/release/src/router/shared/shutils.c
++++ b/release/src/router/shared/shutils.c
+@@ -166,33 +166,53 @@ void dbg(const char * format, ...)
+ char *
+ fd2str(int fd)
+ {
+-	char *buf = NULL;
+-	size_t count = 0;
++	struct stat st;
++	char *buf, *shrunk;
++	size_t cap = 2048, len = 0;
+ 	ssize_t n;
+ 
+-	do {
+-		char *nbuf = realloc(buf, count + 512);
+-		if (!nbuf) {
+-			free(buf);
+-			close(fd);
+-			return NULL;
+-		}
+-		buf = nbuf;
+-		n = read(fd, buf + count, 512);
+-		if (n <= 0) {
+-			if (n < 0) {
++	if (fd < 0)
++		return NULL;
++
++	if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
++		cap = (size_t)st.st_size + 16;
++
++	buf = malloc(cap);
++	if (!buf) {
++		close(fd);
++		return NULL;
++	}
++
++	for (;;) {
++		if (len + 1 >= cap) {
++			size_t new_cap = (cap < 65536) ? (cap * 2) : (cap + cap / 2);
++			char *tmp = realloc(buf, new_cap);
++			if (!tmp) {
+ 				free(buf);
+-				buf = NULL;
++				close(fd);
++				return NULL;
+ 			}
++			buf = tmp;
++			cap = new_cap;
++		}
++		n = read(fd, buf + len, cap - len - 1);
++		if (n > 0) {
++			len += (size_t)n;
++		} else if (n == 0) {
+ 			break;
++		} else {
++			if (errno == EINTR)
++				continue;
++			free(buf);
++			close(fd);
++			return NULL;
+ 		}
+-		count += (size_t)n;
+-	} while (n == 512);
++	}
+ 
+ 	close(fd);
+-	if (buf)
+-		buf[count] = '\0';
+-	return buf;
++	buf[len] = '\0';
++	shrunk = realloc(buf, len + 1);
++	return shrunk ? shrunk : buf;
+ }
+ 
+ /*
+diff --git a/release/src/router/shared/usb.c b/release/src/router/shared/usb.c
+index 1b91c3c..65793a2 100644
+--- a/release/src/router/shared/usb.c
++++ b/release/src/router/shared/usb.c
+@@ -111,11 +111,12 @@ int is_no_partition(const char *discname)
+ 
+ 	if ((procpt = fopen("/proc/partitions", "r"))) {
+ 		while (fgets(line, sizeof(line), procpt)) {
+-			if (sscanf(line, " %d %d %d %[^\n ]", &ma, &mi, &sz, ptname) != 4)
++			if (sscanf(line, " %d %d %d %31[^\n ]", &ma, &mi, &sz, ptname) != 4)
+ 				continue;
+ 			if (strstr(ptname, discname))
+ 				count++;
+ 		}
++		fclose(procpt);
+ 	}
+ 
+ 	return (count == 1);
+diff --git a/release/src/router/shared/volume_id.c b/release/src/router/shared/volume_id.c
+index f24b43b..38eda71 100644
+--- a/release/src/router/shared/volume_id.c
++++ b/release/src/router/shared/volume_id.c
+@@ -196,18 +196,22 @@ static char *probe_apfs(struct volume_id *id, char *dev)
+ 
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/apfsinfo %s", dev);
+ 	if((fp = popen(cmd, "r")) != NULL){
++		char tmp_val[256];
+ 		int first = 1;
+ 		while(fgets(buf, sizeof(buf), fp) != NULL){
+ 			if(!strncmp(buf, "UUID", 4) && !first){
+ 				first = 0;
+ 
+-				sscanf(buf, "UUID: %s", id->uuid);
++				if (sscanf(buf, "UUID: %255s", tmp_val) == 1)
++					strlcpy(id->uuid, tmp_val, sizeof(id->uuid));
+ 				break;
+ 			}
+-			else if(!strncmp(buf, "Name", 4))
+-				sscanf(buf, "Name: %s %*s", id->label);
++			else if(!strncmp(buf, "Name", 4)) {
++				if (sscanf(buf, "Name: %255s %*s", tmp_val) == 1)
++					strlcpy(id->label, tmp_val, sizeof(id->label));
++			}
+ 		}
+-		fclose(fp);
++		pclose(fp);
+ 	}
+ 
+ 	return *(id->label) || *(id->uuid) ? "apfs" : NULL;

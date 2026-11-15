@@ -1,0 +1,809 @@
+diff --git a/release/src/router/cstats/cstats.c b/release/src/router/cstats/cstats.c
+index 5ddce1c..034ebe5 100644
+--- a/release/src/router/cstats/cstats.c
++++ b/release/src/router/cstats/cstats.c
+@@ -263,6 +263,7 @@ static int load_history_to_tree(const char *fname) {
+ 					TREE_INSERT(&tree, _Node, linkage, Node_new(tmp.ipaddr));
+ 
+ 					ptr = TREE_FIND(&tree, _Node, linkage, &tmp);
++					if (!ptr) continue;
+ 
+ 					memcpy(ptr->daily, &tmp.daily, sizeof(data_t) * MAX_NDAILY);
+ 					ptr->dailyp = tmp.dailyp;
+@@ -593,7 +594,7 @@ static void calc(void) {
+ 
+ 		while (fgets(buf, sizeof(buf), f)) {
+ 			if(sscanf(buf, 
+-				"ip = %s bytes_src = %llu %*u %*u %*u %*u packets_src = %*u %*u %*u %*u %*u bytes_dst = %llu %*u %*u %*u %*u packets_dst = %*u %*u %*u %*u %*u time = %*u",
++				"ip = %15s bytes_src = %llu %*u %*u %*u %*u packets_src = %*u %*u %*u %*u %*u bytes_dst = %llu %*u %*u %*u %*u packets_dst = %*u %*u %*u %*u %*u time = %*u",
+ //				"ip = %s bytes_src = %Lu %*Lu %*Lu %*Lu %*Lu packets_src = %*Lu %*Lu %*Lu %*Lu %*Lu bytes_dest = %Lu %*Lu %*Lu %*Lu %*Lu packets_dest = %*Lu %*Lu %*Lu %*Lu %*Lu time = %*lu",
+ 				ip, &rx, &tx) != 3 ) continue;
+ #ifdef DEBUG_CSTATS
+@@ -618,6 +619,7 @@ static void calc(void) {
+ #endif
+ 					TREE_INSERT(&tree, _Node, linkage, Node_new(ipaddr));
+ 					ptr = TREE_FIND(&tree, _Node, linkage, &test);
++					if (!ptr) continue;
+ 					ptr->sync = 1;
+ 					ptr->utime = current_uptime;
+ 				}
+diff --git a/release/src/router/rc/asus_ddns.c b/release/src/router/rc/asus_ddns.c
+index 8d593ad..3597ceb 100644
+--- a/release/src/router/rc/asus_ddns.c
++++ b/release/src/router/rc/asus_ddns.c
+@@ -205,20 +205,20 @@ static int _acquire_token(const char *res_path, const int check_CA)
+ 	}
+ 
+ 	cusid_obj = json_object_new_string(cusid);
+-	if(cusid_obj)
++	if(cusid_obj) {
+ 		json_object_object_add(obj, "cusid", cusid_obj);
+-	else
+-	{
++		cusid_obj = NULL;
++	} else {
+ 		ASUSDDNS_DBG("Cannot add json object, cusid!\n");
+ 		ret = ASUSDDNS_ERR_JSON_ERR;
+ 		goto Err;
+ 	}
+ 
+ 	userticket_obj = json_object_new_string(userticket);
+-	if(userticket_obj)
++	if(userticket_obj) {
+ 		json_object_object_add(obj, "userticket", userticket_obj);
+-	else
+-	{
++		userticket_obj = NULL;
++	} else {
+ 		ASUSDDNS_DBG("Cannot add json object, userticket!\n");
+ 		ret = ASUSDDNS_ERR_JSON_ERR;
+ 		goto Err;
+@@ -227,10 +227,10 @@ static int _acquire_token(const char *res_path, const int check_CA)
+ 	snprintf(devicemac, sizeof(devicemac), "%s", get_ddns_macaddr());
+ 	delete_char(devicemac, ':');
+ 	devicemac_obj = json_object_new_string(devicemac);
+-	if(devicemac_obj)
++	if(devicemac_obj) {
+ 		json_object_object_add(obj, "devicemac", devicemac_obj);
+-	else
+-	{
++		devicemac_obj = NULL;
++	} else {
+ 		ASUSDDNS_DBG("Cannot add json object, devicemac!\n");
+ 		ret = ASUSDDNS_ERR_JSON_ERR;
+ 		goto Err;
+@@ -244,10 +244,10 @@ static int _acquire_token(const char *res_path, const int check_CA)
+ 	}
+ 	
+ 	devicemd5mac_obj = json_object_new_string(md_lan_mac);
+-	if(devicemd5mac_obj)
++	if(devicemd5mac_obj) {
+ 		json_object_object_add(obj, "devicemd5mac", devicemd5mac_obj);
+-	else
+-	{
++		devicemd5mac_obj = NULL;
++	} else {
+ 		ASUSDDNS_DBG("Cannot add json object, devicemd5mac!\n");
+ 		ret = ASUSDDNS_ERR_JSON_ERR;
+ 		goto Err;
+@@ -266,8 +266,10 @@ static int _acquire_token(const char *res_path, const int check_CA)
+ 		sid_obj = json_object_new_string("1001");
+ 	}
+ 	
+-	if(sid_obj)
++	if(sid_obj) {
+ 		json_object_object_add(obj, "sid", sid_obj);
++		sid_obj = NULL;
++	}
+ 	else
+ 	{
+ 		ASUSDDNS_DBG("Cannot add json object, sid!\n");
+@@ -287,7 +289,8 @@ static int _acquire_token(const char *res_path, const int check_CA)
+ 		if(!fp_res)
+ 		{
+ 			ASUSDDNS_DBG("Cannot open file for response data.\n");
+-			return ASUSDDNS_ERR_OPEN_FILE_FAIL;
++			ret = ASUSDDNS_ERR_OPEN_FILE_FAIL;
++			break;
+ 		}
+ 
+ 		curl = curl_easy_init();
+@@ -346,8 +349,10 @@ static int _acquire_token(const char *res_path, const int check_CA)
+ 		else
+ 		{
+ 			ASUSDDNS_DBG("Cannot init CURL\n");
++			fclose(fp_res);
++			unlink(res_path);
+ 			ret = ASUSDDNS_ERR_CURL_ERR;
+-			//goto Err;
++			break;
+ 		}
+ 	}
+ 	curl_global_cleanup();
+@@ -357,8 +362,12 @@ Err:
+ 		json_object_put(cusid_obj);
+ 	if(userticket_obj)
+ 		json_object_put(userticket_obj);
++	if(devicemac_obj)
++		json_object_put(devicemac_obj);
+ 	if(devicemd5mac_obj)
+ 		json_object_put(devicemd5mac_obj);
++	if(sid_obj)
++		json_object_put(sid_obj);
+ 	if(obj)
+ 		json_object_put(obj);
+ 	return ret;
+diff --git a/release/src/router/rc/check_watchdog.c b/release/src/router/rc/check_watchdog.c
+index 1ac731a..caccf47 100644
+--- a/release/src/router/rc/check_watchdog.c
++++ b/release/src/router/rc/check_watchdog.c
+@@ -43,6 +43,10 @@ void check_watchdog()
+ 	char reboot[sizeof("255")];
+ 	char upgrade[sizeof("255")];
+ 
++	time(&now);
++	if (ts_check && ((now - ts_check) < 55))
++		return;
++
+ 	memset(reboot, 0, sizeof("255"));
+ 	memset(upgrade, 0, sizeof("255"));
+ 	f_read_string("/tmp/reboot", reboot, sizeof(reboot));
+@@ -56,13 +60,8 @@ void check_watchdog()
+ 		return;
+ #endif
+ 
++	ts_check = now;
+ 	ret = stat("/tmp/watchdog_heartbeat", &sb);
+-	time(&now);
+-
+-	if (ts_check && ((now - ts_check) < 60))
+-		return;
+-	else
+-		ts_check = now;
+ 
+ 	if ((ret != -1) && ((sb.st_mode & S_IFMT) == S_IFREG)) {
+ 		if ((now - sb.st_ctime) > 300) {
+@@ -95,7 +94,7 @@ check_watchdog_main(int argc, char *argv[])
+ 	signal(SIGTERM, check_watchdog_exit);
+ 	signal(SIGALRM, check_watchdog);
+ 
+-	alarmtimer(30, 0);
++	alarmtimer(60, 0);
+ 
+ 	while (1)
+ 	{
+diff --git a/release/src/router/rc/common.c b/release/src/router/rc/common.c
+index ba6f0dc..32770a7 100644
+--- a/release/src/router/rc/common.c
++++ b/release/src/router/rc/common.c
+@@ -1846,11 +1846,13 @@ int check_mountpoint(char *mountpoint)
+ 	if ((procpt = fopen("/proc/mounts", "r")) != NULL)
+ 	while (fgets(line, sizeof(line), procpt)) {
+ 		memset(mpname, 0x0, sizeof(mpname));
+-		if (sscanf(line, "%s %s %s %s %d %d", devname, mpname, system_type, mount_mode, &dummy1, &dummy2) != 6)
++		if (sscanf(line, "%47s %47s %9s %127s %d %d", devname, mpname, system_type, mount_mode, &dummy1, &dummy2) != 6)
+ 			continue;
+ 
+-		if (!strcmp(mpname, mountpoint))
++		if (!strcmp(mpname, mountpoint)) {
++			fclose(procpt);
+ 			return 1;
++		}
+ 	}
+ 
+ 	if (procpt)
+diff --git a/release/src/router/rc/erp_monitor.c b/release/src/router/rc/erp_monitor.c
+index ccdab5b..dc05f49 100644
+--- a/release/src/router/rc/erp_monitor.c
++++ b/release/src/router/rc/erp_monitor.c
+@@ -1276,7 +1276,7 @@ int erp_monitor_main(int argc, char **argv)
+ 
+ 	while(1)
+ 	{
+-		alarm(1);
++		alarm(erp_status == ERP_STANDBY ? 3 : 10);
+ 		pause();
+ 	}
+ 
+@@ -1293,6 +1293,9 @@ void start_erp_monitor()
+ 	char *erp_monitor_argv[] = {"erp_monitor", NULL};
+ 	pid_t pid;
+ 
++	if (ERP_CHECK_MODEL_LIST() == 0 || ERP_CHECK_TCODE_LIST() == 0)
++		return;
++
+ 	_eval(erp_monitor_argv, NULL, 0, &pid);
+ }
+ #endif // !(defined(RTCONFIG_QCA) || defined(RTCONFIG_RALINK) || defined(RTCONFIG_REALTEK))
+diff --git a/release/src/router/rc/format.c b/release/src/router/rc/format.c
+index 4b51aea..3c1a19e 100644
+--- a/release/src/router/rc/format.c
++++ b/release/src/router/rc/format.c
+@@ -25,7 +25,8 @@ void adjust_merlin_config(void)
+ 	int rgw, plan, converted;
+ 	char *desc, *source, *dest, *iface, newiface[8];
+ #endif
+-	char buffer[65536];
++	const size_t buffer_sz = 65536;
++	char *buffer = calloc(1, buffer_sz);
+ 	char *dhcp_hostnames;
+ 	char *nv, *nvp, *entry;
+ 	char *nv2, *nvp2, *entry2;
+@@ -34,6 +35,9 @@ void adjust_merlin_config(void)
+ 	int count, len = 0, found;
+ 	int need_commit = 0;
+ 
++	if (!buffer)
++		return;
++
+ #ifdef RTCONFIG_OPENVPN
+ /* Migrate OVPN RGW + clientlist rules to VPN Director (386.3) */
+ 	*buffer = '\0';
+@@ -97,15 +101,15 @@ void adjust_merlin_config(void)
+ 		converted = 0;
+ 		sprintf(varname_ori, "vpn_server%d_custom2", unit);
+ 		if(!nvram_is_empty(varname_ori)) {
+-			strlcpy(buffer, nvram_safe_get(varname_ori), sizeof (buffer));
++			strlcpy(buffer, nvram_safe_get(varname_ori), buffer_sz);
+ 			nvram_unset(varname_ori);
+ #ifdef HND_ROUTER
+ 			sprintf(varname_ori, "vpn_server%d_custom21", unit);
+-			strlcat(buffer, nvram_safe_get(varname_ori), sizeof (buffer));
++			strlcat(buffer, nvram_safe_get(varname_ori), buffer_sz);
+ 			nvram_unset(varname_ori);
+ 
+ 			sprintf(varname_ori, "vpn_server%d_custom22", unit);
+-			strlcat(buffer, nvram_safe_get(varname_ori), sizeof (buffer));
++			strlcat(buffer, nvram_safe_get(varname_ori), buffer_sz);
+ 			nvram_unset(varname_ori);
+ #endif
+ 			set_ovpn_custom(OVPN_TYPE_SERVER, unit, buffer);
+@@ -115,7 +119,7 @@ void adjust_merlin_config(void)
+ /* Handle cust2 base64 migration */
+ 		sprintf(varname_ori, "vpn_server%d_cust2", unit);
+ 		if(!converted && !nvram_is_empty(varname_ori)) {
+-			get_ovpn_custom_old(OVPN_TYPE_SERVER, unit, buffer, sizeof (buffer));
++			get_ovpn_custom_old(OVPN_TYPE_SERVER, unit, buffer, buffer_sz);
+ 			set_ovpn_custom(OVPN_TYPE_SERVER, unit, buffer);
+ 			nvram_unset(varname_ori);
+ 			converted = 1;
+@@ -136,15 +140,15 @@ void adjust_merlin_config(void)
+ 		converted = 0;
+ 		sprintf(varname_ori, "vpn_client%d_custom2", unit);
+ 		if(!nvram_is_empty(varname_ori)) {
+-			strlcpy(buffer, nvram_safe_get(varname_ori), sizeof (buffer));
++			strlcpy(buffer, nvram_safe_get(varname_ori), buffer_sz);
+ 			nvram_unset(varname_ori);
+ #ifdef HND_ROUTER
+ 			sprintf(varname_ori, "vpn_client%d_custom21", unit);
+-			strlcat(buffer, nvram_safe_get(varname_ori), sizeof (buffer));
++			strlcat(buffer, nvram_safe_get(varname_ori), buffer_sz);
+ 			nvram_unset(varname_ori);
+ 
+ 			sprintf(varname_ori, "vpn_client%d_custom22", unit);
+-			strlcat(buffer, nvram_safe_get(varname_ori), sizeof (buffer));
++			strlcat(buffer, nvram_safe_get(varname_ori), buffer_sz);
+ 			nvram_unset(varname_ori);
+ #endif
+ 			set_ovpn_custom(OVPN_TYPE_CLIENT, unit, buffer);
+@@ -154,7 +158,7 @@ void adjust_merlin_config(void)
+ /* Handle cust2 base64 migration */
+ 		sprintf(varname_ori, "vpn_client%d_cust2", unit);
+ 		if(!converted && !nvram_is_empty(varname_ori)) {
+-			get_ovpn_custom_old(OVPN_TYPE_CLIENT, unit, buffer, sizeof (buffer));
++			get_ovpn_custom_old(OVPN_TYPE_CLIENT, unit, buffer, buffer_sz);
+ 			set_ovpn_custom(OVPN_TYPE_CLIENT, unit, buffer);
+ 			nvram_unset(varname_ori);
+ 			converted = 1;
+@@ -297,7 +301,7 @@ void adjust_merlin_config(void)
+ 			else if (count == 4) {	// Complete entry
+ 				strlcpy(tmp, entry, sizeof(tmp));
+ 			}
+-			strlcat(buffer, tmp, sizeof(buffer));
++			strlcat(buffer, tmp, buffer_sz);
+ 		}
+ 
+ 		if (nv2) free(nv2);
+@@ -345,6 +349,7 @@ void adjust_merlin_config(void)
+ 	}
+ #endif
+ 
++	free(buffer);
+ 	if (need_commit)
+ 		nvram_commit();
+ }
+diff --git a/release/src/router/rc/interface.c b/release/src/router/rc/interface.c
+index 981d1c4..9bafc9c 100644
+--- a/release/src/router/rc/interface.c
++++ b/release/src/router/rc/interface.c
+@@ -421,7 +421,7 @@ int route_del(char *name, int metric, char *dst, char *gateway, char *genmask)
+ 
+ int route_exist(const char *name, int metric, const char *dst, const char *gateway, const char *mask)
+ {
+-	FILE *fp = fopen("/proc/net/route", "r");
++	FILE *fp;
+ 	in_addr_t addr_dst, addr_gate, addr_mask;
+ 	in_addr_t rtr_dst, rtr_gate, rtr_mask;
+ 	int rtr_metric;
+@@ -431,24 +431,26 @@ int route_exist(const char *name, int metric, const char *dst, const char *gatew
+ 
+ 	if (!name || !dst || !gateway || !mask)
+ 		return -1;
+-	if (inet_pton(AF_INET, dst, &addr_dst) < 0
+-	 || inet_pton(AF_INET, gateway, &addr_gate) < 0
+-	 || inet_pton(AF_INET, mask, &addr_mask) < 0)
++	if (inet_pton(AF_INET, dst, &addr_dst) <= 0
++	 || inet_pton(AF_INET, gateway, &addr_gate) <= 0
++	 || inet_pton(AF_INET, mask, &addr_mask) <= 0)
+ 		return -1;
+ 
++	fp = fopen("/proc/net/route", "r");
+ 	if(fp) {
+ 		while(fgets(buf, sizeof(buf), fp)) {
+ 			if(!strncmp(buf, "Iface", 5))
+ 				continue;
+ 
+-			i = sscanf(buf, "%s %x %x %*s %*s %*s %d %x",
++			i = sscanf(buf, "%15s %x %x %*s %*s %*s %d %x",
+ 					iface, &rtr_dst, &rtr_gate, &rtr_metric, &rtr_mask);
+-			if (i != 4)
+-				break;
++			if (i != 5)
++				continue;
+ 
+ 			if( !strcmp(name, iface) && rtr_metric == metric && addr_dst == rtr_dst
+ 			 && addr_gate == rtr_gate && addr_mask == rtr_mask) {
+ 				ret = 1;
++				break;
+ 			}
+ 		}
+ 		if (ret != 1)
+diff --git a/release/src/router/rc/netool.c b/release/src/router/rc/netool.c
+index 086667b..70a22ce 100644
+--- a/release/src/router/rc/netool.c
++++ b/release/src/router/rc/netool.c
+@@ -133,12 +133,20 @@ FILE *vpopen(const char* cmdstring, const char *type)
+ 	
+ 	if (*type == 'r') { 
+ 		close(pfd[1]);
+-		if ( (fp = fdopen(pfd[0], type)) == NULL)
++		if ( (fp = fdopen(pfd[0], type)) == NULL) {
++			close(pfd[0]);
++			kill(pid, SIGKILL);
++			waitpid(pid, NULL, 0);
+ 			return(NULL);
++		}
+ 	} else {
+ 		close(pfd[0]);
+-		if ( (fp = fdopen(pfd[1], type)) == NULL)
++		if ( (fp = fdopen(pfd[1], type)) == NULL) {
++			close(pfd[1]);
++			kill(pid, SIGKILL);
++			waitpid(pid, NULL, 0);
+ 			return(NULL);
++		}
+ 	}
+ 	
+ 	childpid[fileno(fp)] = pid; /* remember child pid for this fd */
+@@ -743,33 +751,29 @@ static void start_req_thread(void *rInfo, int type)
+ 	
+ 	pthread_attr_init(&attr);
+ 	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+-	//ret = pthread_attr_setstacksize(&attr, 128 * 1024);
+-	//if (ret != 0) {
+-	//	ErrorMsg("Error %d %s\n", ret, strerror(errno))
+-	//	perror("Thread stacksize failed\n");
+-	//}
++	pthread_attr_setstacksize(&attr, 256 * 1024);
+ 	
+ 	if (type == REQ_PING_MODE) {
+ 	
+-		ret = pthread_create(&thread,NULL,(void *)&do_ping, rInfo);
++		ret = pthread_create(&thread,&attr,(void *)&do_ping, rInfo);
+ 	} else if (type == REQ_TRACEROUTE_MODE) {
+ 		IN_EXEC = 1;
+-		ret = pthread_create(&thread,NULL,(void *)&do_traceroute, rInfo);
++		ret = pthread_create(&thread,&attr,(void *)&do_traceroute, rInfo);
+ 	} else if (type == REQ_PING_NORMAL_MODE) {
+ 	
+-		ret = pthread_create(&thread,NULL,(void *)&do_ping_normal, rInfo);
++		ret = pthread_create(&thread,&attr,(void *)&do_ping_normal, rInfo);
+ 	} else if (type == REQ_TRACEROUTE_NORMAL_MODE) {
+ 	
+-		ret = pthread_create(&thread,NULL,(void *)&do_traceroute_normal, rInfo);
++		ret = pthread_create(&thread,&attr,(void *)&do_traceroute_normal, rInfo);
+ 	} else if (type == REQ_NSLOOKUP_MODE) {
+ 	
+-		ret = pthread_create(&thread,NULL,(void *)&do_nslookup, rInfo);
++		ret = pthread_create(&thread,&attr,(void *)&do_nslookup, rInfo);
+ 	} else if (type == REQ_NETSTAT_MODE) {
+ 	
+-		ret = pthread_create(&thread,NULL,(void *)&do_netstat, rInfo);
++		ret = pthread_create(&thread,&attr,(void *)&do_netstat, rInfo);
+ 	} else if (type == REQ_NETSTAT_NAT_MODE) {
+ 	
+-		ret = pthread_create(&thread,NULL,(void *)&do_netstat_nat, rInfo);
++		ret = pthread_create(&thread,&attr,(void *)&do_netstat_nat, rInfo);
+ 	}
+ 	
+ 	if (ret != 0) {
+@@ -789,7 +793,8 @@ static void local_socket_thread(void)
+ 	MyDBG("Start unix socket thread.\n");
+ 	pthread_attr_init(&attr);
+ 	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+-	pthread_create(&thread,NULL,(void *)&start_local_socket,NULL);
++	pthread_attr_setstacksize(&attr, 256 * 1024);
++	pthread_create(&thread,&attr,(void *)&start_local_socket,NULL);
+ 	pthread_attr_destroy(&attr);
+ }
+ 
+diff --git a/release/src/router/rc/rmd.c b/release/src/router/rc/rmd.c
+index 4347e8b..faf2287 100644
+--- a/release/src/router/rc/rmd.c
++++ b/release/src/router/rc/rmd.c
+@@ -154,7 +154,8 @@ void rmd_ipc_socket_thread(void)
+ 
+ 	pthread_attr_init(&attr);
+ 	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+-	pthread_create(&thread,NULL,(void *)&rmd_start_ipc_socket,NULL);
++	pthread_attr_setstacksize(&attr, 256 * 1024);
++	pthread_create(&thread,&attr,(void *)&rmd_start_ipc_socket,NULL);
+ 	pthread_attr_destroy(&attr);
+ }
+ 
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index d393a4c..c772188 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -944,6 +944,7 @@ void create_passwd(void)
+ 					break;
+ 			}
+ 		}
++		free(nv);
+ 	}
+ #endif
+ 
+@@ -4044,6 +4045,9 @@ start_infosvr()
+ 	char *infosvr_argv[] = {"/usr/sbin/infosvr", "br0", NULL};
+ 	pid_t pid;
+ 
++	if (nvram_get_int("disable_infosvr"))
++		return 0;
++
+ #ifdef RTCONFIG_MODEM_BRIDGE
+ 	if(sw_mode() == SW_MODE_AP && nvram_get_int("modem_bridge"))
+ 		return 0;
+@@ -5855,6 +5859,8 @@ void stop_asd(void)
+ void start_asd(void)
+ {
+ 	stop_asd();
++	if (nvram_get_int("asd_disable"))
++		return;
+ 	xstart("asd");
+ }
+ #endif /* RTCONFIG_ASD */
+@@ -7017,6 +7023,8 @@ int write_lltd_conf(void)
+ 
+ int start_lltd(void)
+ {
++	if (nvram_get_int("disable_lltd"))
++		return 0;
+ 	chdir("/usr/sbin");
+ 
+ #if defined(CONFIG_BCMWL5) && !defined(RTCONFIG_BCMARM)
+@@ -7308,6 +7316,13 @@ int start_mdns(void)
+ 	};
+ 	pid_t pid;
+ 
++	if (!nvram_get_int("mdns_enable")
++#ifdef RTCONFIG_TIMEMACHINE
++	 && !nvram_get_int("timemachine_enable")
++#endif
++	)
++		return 0;
++
+ #ifdef RTAC68U
+ 	if (!hw_usb_cap())
+ 		return 0;
+@@ -8604,9 +8619,9 @@ void start_bhblock(void)
+ #ifdef RTCONFIG_FREERADIUS
+ void radiusd_ascii_to_char(void)
+ {
+-	sqlite3 *db;
++	sqlite3 *db = NULL;
+ 	char *errMsg=NULL;
+-	char **dbResult;
++	char **dbResult = NULL;
+ 	int nRow, nColumn;
+ 	int ret=0;
+ 	int i=0;
+@@ -8621,12 +8636,12 @@ void radiusd_ascii_to_char(void)
+ 	memset(tmpSql, 0, sizeof(tmpSql));
+ 
+ 	if (sqlite3_open_v2("/tmp/freeradius.db", &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)) {
+-		return;
++		goto pms_cleanup;
+ 	}
+ 
+ 	ret = sqlite3_exec(db, "attach '/jffs/.sys/Permission/PMS_data.db3' as pms;insert into main.radcheck select NULL, Name, 'Cleartext-Password', ':=', passwd from pms.user;", 0, 0, &errMsg);
+ 	if(ret != SQLITE_OK )
+-		return;
++		goto pms_cleanup;
+ 
+ 	if(sqlite3_get_table(db, "select * from radcheck", &dbResult, &nRow, &nColumn, &errMsg) == SQLITE_OK) {
+ 		for(i = 1; i <= nRow ; i++ ) {
+@@ -8638,14 +8653,18 @@ void radiusd_ascii_to_char(void)
+ 			//_dprintf("tmpSql=%s\n", tmpSql);
+ 			ret = sqlite3_exec(db, tmpSql, 0, 0, &errMsg);
+ 			if( ret != SQLITE_OK )
+-				return;
++				goto pms_cleanup;
+ 		}
+ 	}
++
++pms_cleanup:
+ 	if(errMsg!=NULL)
+ 		sqlite3_free(errMsg);
+ 
+-	sqlite3_free_table(dbResult);
+-	sqlite3_close(db);
++	if(dbResult!=NULL)
++		sqlite3_free_table(dbResult);
++	if(db!=NULL)
++		sqlite3_close(db);
+ }
+ 
+ void radiusd_updateDB(void)
+@@ -21999,6 +22018,12 @@ void start_conn_diag(void){
+ 	pid_t pid;
+ 
+ 	stop_conn_diag();
++	if (!nvram_get_int("enable_diag")
++#ifdef RTCONFIG_AMAS
++	 && !aimesh_re_node()
++#endif
++	 && nvram_is_empty("cfg_group"))
++		return;
+ 
+ 	_eval(cmd, NULL, 0, &pid);
+ }
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index 5247454..2e5da53 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -4230,7 +4230,7 @@ void btn_check(void)
+ 							/* RE or default */
+ 							if ((sw_mode() == SW_MODE_AP && !nvram_match("cfg_master", "1")) ||
+ 							    nvram_match("x_Setting", "0")) {
+-								doSystem("killall wifimon_check");
++								killall("wifimon_check", SIGTERM);
+ 								kill_wifi_wpa_supplicant(1);
+ 
+ 								if(nvram_get_int("dfs_check_period"))
+@@ -4672,7 +4672,8 @@ int timecheck_item(char *activeTime)
+ 		/* Counting variables quantity*/
+ 		x=0;
+ 		int schedCount = 1; // how many variables in activeTime	111014<222024<331214 count will be 3
+-		for(;x<strlen(activeTime);x++)
++		size_t activeLen = strlen(activeTime);
++		for(;x<activeLen;x++)
+ 		{
+ 			if (activeTime[x] == '<')
+ 			schedCount++;
+@@ -10508,6 +10509,12 @@ void auto_firmware_check_merlin()
+ 		return;
+ 	}
+ 
++	if (!nvram_get_int("firmware_check_enable") ||
++	    nvram_contains_word("rc_support", "noupdate")) {
++		bootup_check = 0;
++		return;
++	}
++
+ 	if(bootup_check_period > 0){	//bootup wait 90s to check
+ 		bootup_check_period--;
+ 		return;
+diff --git a/release/src/router/rc/wireguard.c b/release/src/router/rc/wireguard.c
+index 763b219..8a7b15f 100644
+--- a/release/src/router/rc/wireguard.c
++++ b/release/src/router/rc/wireguard.c
+@@ -175,30 +175,37 @@ static void _wg_client_check_conf(char* prefix)
+ static void _wg_config_route(char* prefix, char* ifname, int table)
+ {
+ 	char aips[1024] = {0};
+-	char buf[128] = {0};
++	char buf[256] = {0};
+ 	char *p = NULL;
+ 	char table_str[8] = {0};
+ 	FILE *fp = NULL;
+-	char cmd[256] = {0};
+ 
+ 	snprintf(table_str, sizeof(table_str), "%d", table);
+ 
+ 	if (table > 0 && table < 256)
+-	{// copy from main
++	{// copy from main via single ip -batch invocation
++		char batch_file[] = "/tmp/wg_rt_XXXXXX";
++		int batch_fd = mkstemp(batch_file);
++		FILE *bfp = (batch_fd >= 0) ? fdopen(batch_fd, "w") : NULL;
++
+ 		eval("ip", "route", "flush", "table", table_str);
+-		system("ip route show table main > /tmp/route_tmp");
+-		fp = fopen("/tmp/route_tmp", "r");
+-		if(fp)
+-		{
+-			while(fgets(buf, sizeof(buf), fp))
+-			{
+-				snprintf(cmd, sizeof(cmd), "ip route add %s table %d ", trim_r(buf), table);
+-				//_dprintf("[%s]\n", cmd);
+-				system(cmd);
++		if (bfp) {
++			fp = popen("ip route show table main", "r");
++			if (fp) {
++				while (fgets(buf, sizeof(buf), fp)) {
++					char *r = trim_r(buf);
++					if (*r)
++						fprintf(bfp, "route replace %s table %d\n", r, table);
++				}
++				pclose(fp);
+ 			}
+-			fclose(fp);
++			fclose(bfp);
++			eval("ip", "-batch", batch_file);
++			unlink(batch_file);
++		} else if (batch_fd >= 0) {
++			close(batch_fd);
++			unlink(batch_file);
+ 		}
+-		unlink("/tmp/route_tmp");
+ 	}
+ 
+ 	// Allowed IPs
+diff --git a/release/src/router/rstats/rstats.c b/release/src/router/rstats/rstats.c
+index 49c7471..98520a8 100755
+--- a/release/src/router/rstats/rstats.c
++++ b/release/src/router/rstats/rstats.c
+@@ -977,7 +977,7 @@ static void calc(void)
+ 	}
+ #ifdef RTCONFIG_BCMARM
+ 	f = renew_devfile(f);
+-	if (!f) return;
++	if (!f) goto exit_calc;
+ #endif
+ 	memset(tmp_speed, 0, sizeof(tmp_speed));
+ 	while (fgets(buf, sizeof(buf), f)) {
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index bf4e283..3dde7ff 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -1869,7 +1869,7 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "re_mode", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "max_guest_index", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+-	{ "enable_diag", "2", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "enable_diag", "0", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "diag_local_data", "1", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "diag_interval", "60", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "diag_dbg", "0", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+@@ -4367,7 +4367,7 @@ struct nvram_tuple router_defaults[] = {
+ #endif
+ 
+ #ifdef RTCONFIG_TUNNEL
+-	{ "aae_disable_force", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "aae_disable_force", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #endif
+ 	{ "uiFlag", "1", CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "rog_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* standalone gear accelerator enable */
+@@ -4466,6 +4466,10 @@ struct nvram_tuple router_defaults[] = {
+ 
+ 	{ "ct_max", "65536", CKN_STR6, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 }, //Right-sized for 512 MB HND SLUB safety
+ 	{ "ct_hashsize", "16384", CKN_STR6, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "asd_disable", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "mdns_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "disable_infosvr", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "disable_lltd", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "dns_fwd_local", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	// Forward queries for local domain to upstream DNS server
+ 	{ "dhcp_dns2_x", "", CKN_STR15, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "dhcpd_querylog", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+diff --git a/release/src/router/shared/linux_timer_ax.c b/release/src/router/shared/linux_timer_ax.c
+index f0d8a79..0b8cd17 100644
+--- a/release/src/router/shared/linux_timer_ax.c
++++ b/release/src/router/shared/linux_timer_ax.c
+@@ -243,7 +243,14 @@ void init_event_queue(int n)
+ 		sigaddset(&set, SIGALRM);
+ 		pthread_sigmask(SIG_BLOCK, &set, NULL);
+ 		/* start alarm handler thread */
+-		pthread_create(&thread_sigalarm, NULL, thread_alarm_handler, NULL);
++		{
++			pthread_attr_t attr;
++			pthread_attr_init(&attr);
++			pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
++			pthread_attr_setstacksize(&attr, 256 * 1024);
++			pthread_create(&thread_sigalarm, &attr, thread_alarm_handler, NULL);
++			pthread_attr_destroy(&attr);
++		}
+ 		thread_running=1;
+ 	}
+ }
+diff --git a/release/src/router/shared/wlif_utils.c b/release/src/router/shared/wlif_utils.c
+index ece5571..ce23469 100644
+--- a/release/src/router/shared/wlif_utils.c
++++ b/release/src/router/shared/wlif_utils.c
+@@ -1961,13 +1961,14 @@ wl_wlif_create_thrd(pthread_t *thread_id, wlif_thrd_func fptr, void *arg, bool i
+ 		goto exit;
+ 	}
+ 
+-	if (is_detached) {
+-		ret = pthread_attr_init(&attr);
+-		if (ret != 0) {
+-			cprintf("Err : shared %s pthread_attr_init failed \n", __func__);
+-			goto exit;
+-		}
++	ret = pthread_attr_init(&attr);
++	if (ret != 0) {
++		cprintf("Err : shared %s pthread_attr_init failed \n", __func__);
++		goto exit;
++	}
++	pthread_attr_setstacksize(&attr, 256 * 1024);
+ 
++	if (is_detached) {
+ 		ret = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+ 		if (ret != 0) {
+ 			cprintf("Err : shared %s %d shared pthread_attr_setdetachstat failed\n",
+@@ -1977,13 +1978,11 @@ wl_wlif_create_thrd(pthread_t *thread_id, wlif_thrd_func fptr, void *arg, bool i
+ 		}
+ 	}
+ 
+-	if ((ret = pthread_create(thread_id, is_detached ? &attr : NULL, fptr, arg)) != 0) {
++	if ((ret = pthread_create(thread_id, &attr, fptr, arg)) != 0) {
+ 		cprintf("Err : shared %s %d pthread_create failed \n", __func__, __LINE__);
+ 	}
+ 
+-	if (is_detached) {
+-		pthread_attr_destroy(&attr);
+-	}
++	pthread_attr_destroy(&attr);
+ 
+ exit:
+ 	return ret;
+diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shared/wlif_utils_ax.c
+index b63bd8e..d3bd53b 100644
+--- a/release/src/router/shared/wlif_utils_ax.c
++++ b/release/src/router/shared/wlif_utils_ax.c
+@@ -1752,13 +1752,14 @@ wl_wlif_create_thrd(pthread_t *thread_id, wlif_thrd_func fptr, void *arg, bool i
+ 		goto exit;
+ 	}
+ 
+-	if (is_detached) {
+-		ret = pthread_attr_init(&attr);
+-		if (ret != 0) {
+-			cprintf("Err : shared %s pthread_attr_init failed \n", __func__);
+-			goto exit;
+-		}
++	ret = pthread_attr_init(&attr);
++	if (ret != 0) {
++		cprintf("Err : shared %s pthread_attr_init failed \n", __func__);
++		goto exit;
++	}
++	pthread_attr_setstacksize(&attr, 256 * 1024);
+ 
++	if (is_detached) {
+ 		ret = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+ 		if (ret != 0) {
+ 			cprintf("Err : shared %s %d shared pthread_attr_setdetachstat failed\n",
+@@ -1768,13 +1769,11 @@ wl_wlif_create_thrd(pthread_t *thread_id, wlif_thrd_func fptr, void *arg, bool i
+ 		}
+ 	}
+ 
+-	if ((ret = pthread_create(thread_id, is_detached ? &attr : NULL, fptr, arg)) != 0) {
++	if ((ret = pthread_create(thread_id, &attr, fptr, arg)) != 0) {
+ 		cprintf("Err : shared %s %d pthread_create failed \n", __func__, __LINE__);
+ 	}
+ 
+-	if (is_detached) {
+-		pthread_attr_destroy(&attr);
+-	}
++	pthread_attr_destroy(&attr);
+ 
+ exit:
+ 	return ret;

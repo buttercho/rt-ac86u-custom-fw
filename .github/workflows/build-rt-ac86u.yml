@@ -4,13 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       build_label:
-        description: "Artifact version suffix"
+        description: "Optional artifact version suffix (defaults to sec2026-set2 on set2-static-opt, sec2026 otherwise)"
         required: false
-        default: "sec2026"
+        default: ""
         type: string
+      apply_set2_optimizations:
+        description: "Apply Set 2 static-analysis CPU/RAM/SMP/RPS optimizations (patches 006..009 + wsdd2 A-11)"
+        required: false
+        default: true
+        type: boolean
   push:
     branches:
       - main
+      - set2-static-opt
 
 permissions:
   contents: read
@@ -51,9 +57,15 @@ jobs:
           fetch-depth: 1
 
       - name: Apply 2024-2026 dependency backports & modular RT-AC86U patches
+        env:
+          INPUT_APPLY_SET2: ${{ inputs.apply_set2_optimizations }}
         run: |
           chmod +x "${GITHUB_WORKSPACE}/custom-fw/scripts/"*.sh "${GITHUB_WORKSPACE}/custom-fw/tests/"*.sh
-          "${GITHUB_WORKSPACE}/custom-fw/scripts/apply_backports.sh" "${GITHUB_WORKSPACE}/asuswrt-merlin.ng"
+          EXTRA_FLAGS=()
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${INPUT_APPLY_SET2}" == "false" ]]; then
+            EXTRA_FLAGS+=(--set1-only)
+          fi
+          "${GITHUB_WORKSPACE}/custom-fw/scripts/apply_backports.sh" "${EXTRA_FLAGS[@]}" "${GITHUB_WORKSPACE}/asuswrt-merlin.ng"
 
       - name: Build Asuswrt-Merlin fw-build:20.04 container & fetch pinned HND GCC 5.3 toolchains
         run: |
@@ -78,13 +90,19 @@ jobs:
             bash -c 'arm-buildroot-linux-gnueabi-gcc --version && aarch64-buildroot-linux-gnu-gcc --version'
 
       - name: "STAGE 1 (Pre-Build): Patch, Struct ABI & Closed-Source .o Blob Contract Gate"
+        env:
+          INPUT_APPLY_SET2: ${{ inputs.apply_set2_optimizations }}
         run: |
+          STAGE1_FLAGS=()
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${INPUT_APPLY_SET2}" == "false" ]]; then
+            STAGE1_FLAGS+=(--set1-only)
+          fi
           docker run --rm \
             -v "${GITHUB_WORKSPACE}/custom-fw:/workspace/custom-fw:ro" \
             -v "${GITHUB_WORKSPACE}/asuswrt-merlin.ng:/workspace/build/asuswrt-merlin.ng:ro" \
             -v "/tmp/am-toolchains/brcm-arm-hnd:/opt/toolchains:ro" \
             fw-build:20.04 \
-            /workspace/custom-fw/tests/stage1_prebuild_gate.sh --already-patched /workspace/build/asuswrt-merlin.ng
+            /workspace/custom-fw/tests/stage1_prebuild_gate.sh --already-patched "${STAGE1_FLAGS[@]}" /workspace/build/asuswrt-merlin.ng
 
       - name: "STAGE 2 (Pre-Build): ASan + UBSan + GCC -fanalyzer + cppcheck Gate"
         run: |
@@ -140,7 +158,7 @@ jobs:
       - name: Upload verified RT-AC86U _ubi.w firmware & pre-flash toolkit
         uses: actions/upload-artifact@v4
         with:
-          name: RT-AC86U-386.14_2-${{ inputs.build_label || 'sec2026' }}
+          name: RT-AC86U-386.14_2-${{ inputs.build_label || ((github.ref_name == 'set2-static-opt' && !(github.event_name == 'workflow_dispatch' && inputs.apply_set2_optimizations == false)) && 'sec2026-set2' || 'sec2026') }}
           path: dist/*
           if-no-files-found: error
           retention-days: 30

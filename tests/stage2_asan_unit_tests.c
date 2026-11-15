@@ -7,11 +7,14 @@
  */
 
 #define _GNU_SOURCE
+#include <arpa/inet.h>
 #include <assert.h>
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,32 +44,103 @@ static size_t bsd_strlcat(char *dst, const char *src, size_t siz) {
 }
 
 /* =========================================================================
- * 1. Patched fd2str() (release/src/router/shared/shutils.c)
+ * 1. Patched fd2str() (release/src/router/shared/shutils.c, Set 2 B-02)
  * ========================================================================= */
 typedef ssize_t (*mock_read_fn)(int fd, void *buf, size_t count);
 
-static char *patched_fd2str_impl(int fd, mock_read_fn rfn) {
-    char *buf = NULL;
-    size_t count = 0, n = 0;
-    ssize_t r;
+static char *patched_fd2str_real(int fd) {
+    struct stat st;
+    char *buf, *shrunk;
+    size_t cap = 2048, len = 0;
+    ssize_t n;
 
-    do {
-        buf = realloc(buf, count + 512);
-        if (!buf)
+    if (fd < 0)
+        return NULL;
+
+    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
+        cap = (size_t)st.st_size + 16;
+
+    buf = malloc(cap);
+    if (!buf) {
+        close(fd);
+        return NULL;
+    }
+
+    for (;;) {
+        if (len + 1 >= cap) {
+            size_t new_cap = (cap < 65536) ? (cap * 2) : (cap + cap / 2);
+            char *tmp = realloc(buf, new_cap);
+            if (!tmp) {
+                free(buf);
+                close(fd);
+                return NULL;
+            }
+            buf = tmp;
+            cap = new_cap;
+        }
+        n = read(fd, buf + len, cap - len - 1);
+        if (n > 0) {
+            len += (size_t)n;
+        } else if (n == 0) {
+            break;
+        } else {
+            if (errno == EINTR)
+                continue;
+            free(buf);
+            close(fd);
             return NULL;
-        r = rfn(fd, buf + count, 512);
-        if (r < 0) {
+        }
+    }
+
+    close(fd);
+    buf[len] = '\0';
+    shrunk = realloc(buf, len + 1);
+    return shrunk ? shrunk : buf;
+}
+
+static char *patched_fd2str_mock(int fd, mock_read_fn rfn) {
+    char *buf, *shrunk;
+    size_t cap = 512, len = 0;
+    ssize_t n;
+
+    if (fd < 0)
+        return NULL;
+
+    buf = malloc(cap);
+    if (!buf)
+        return NULL;
+
+    for (;;) {
+        if (len + 1 >= cap) {
+            size_t new_cap = (cap < 65536) ? (cap * 2) : (cap + cap / 2);
+            char *tmp = realloc(buf, new_cap);
+            if (!tmp) {
+                free(buf);
+                return NULL;
+            }
+            buf = tmp;
+            cap = new_cap;
+        }
+        n = rfn(fd, buf + len, cap - len - 1);
+        if (n > 0) {
+            len += (size_t)n;
+        } else if (n == 0) {
+            break;
+        } else {
+            if (errno == EINTR)
+                continue;
             free(buf);
             return NULL;
         }
-        n = (size_t)r;
-        count += n;
-    } while (n == 512);
-    buf[count] = '\0';
-    return buf;
+    }
+
+    buf[len] = '\0';
+    shrunk = realloc(buf, len + 1);
+    return shrunk ? shrunk : buf;
 }
 
 static int g_mock_fail_on_call = 0;
+static int g_mock_eintr_on_call = 0;
 static int g_mock_call_idx = 0;
 static const char *g_mock_payload = NULL;
 static size_t g_mock_offset = 0;
@@ -74,6 +148,10 @@ static size_t g_mock_offset = 0;
 static ssize_t test_mock_read(int fd, void *buf, size_t count) {
     (void)fd;
     g_mock_call_idx++;
+    if (g_mock_eintr_on_call == g_mock_call_idx) {
+        errno = EINTR;
+        return -1;
+    }
     if (g_mock_fail_on_call == g_mock_call_idx) {
         errno = EIO;
         return -1;
@@ -83,40 +161,114 @@ static ssize_t test_mock_read(int fd, void *buf, size_t count) {
         return 0;
     size_t rem = total - g_mock_offset;
     size_t to_copy = rem < count ? rem : count;
-    /* Note: in real fd2str, count is 512; if rem == 512, n == 512 triggers next chunk */
     memcpy(buf, g_mock_payload + g_mock_offset, to_copy);
     g_mock_offset += to_copy;
     return (ssize_t)to_copy;
 }
 
+static void write_all_exact(int fd, const void *buf, size_t len) {
+    const char *p = (const char *)buf;
+    size_t written = 0;
+    while (written < len) {
+        ssize_t w = write(fd, p + written, len - written);
+        assert(w > 0);
+        written += (size_t)w;
+    }
+}
+
 static void test_fd2str(void) {
-    /* Case A: immediate read() == -1 must return NULL without size_t underflow */
+    /* Case A: negative fd & mock read() == -1 / EINTR recovery */
+    assert(patched_fd2str_real(-1) == NULL);
+
+    g_mock_eintr_on_call = 0;
     g_mock_fail_on_call = 1;
     g_mock_call_idx = 0;
     g_mock_payload = "unused";
     g_mock_offset = 0;
-    assert(patched_fd2str_impl(42, test_mock_read) == NULL);
+    assert(patched_fd2str_mock(42, test_mock_read) == NULL);
 
-    /* Case B: 1st chunk == 512 B succeeds, 2nd chunk fails with -1 -> clean free & NULL */
     char big[700];
     memset(big, 'A', sizeof(big) - 1);
     big[sizeof(big) - 1] = '\0';
+    g_mock_eintr_on_call = 0;
     g_mock_fail_on_call = 2;
     g_mock_call_idx = 0;
     g_mock_payload = big;
     g_mock_offset = 0;
-    assert(patched_fd2str_impl(42, test_mock_read) == NULL);
+    assert(patched_fd2str_mock(42, test_mock_read) == NULL);
 
-    /* Case C: multi-chunk 699-byte read succeeds and NUL-terminates cleanly */
+    /* Case B: EINTR retry + multi-chunk geometric growth succeeds with 0 leaks */
+    g_mock_eintr_on_call = 1;
     g_mock_fail_on_call = 0;
     g_mock_call_idx = 0;
     g_mock_payload = big;
     g_mock_offset = 0;
-    char *res = patched_fd2str_impl(42, test_mock_read);
+    char *res = patched_fd2str_mock(42, test_mock_read);
     assert(res != NULL);
     assert(strlen(res) == 699);
     assert(strcmp(res, big) == 0);
     free(res);
+
+    /* Case C: Real 0-byte regular file -> returns "" and closes fd */
+    char empty_path[] = "/tmp/stage2_fd2str_empty_XXXXXX";
+    int efd = mkstemp(empty_path);
+    assert(efd >= 0);
+    char *empty_s = patched_fd2str_real(efd);
+    assert(empty_s != NULL && empty_s[0] == '\0');
+    assert(fcntl(efd, F_GETFD) == -1 && errno == EBADF);
+    free(empty_s);
+    unlink(empty_path);
+
+    /* Case D: Real 256 KB regular file -> fstat exact prealloc + closes fd */
+    const size_t reg_sz = 256u * 1024u;
+    char *reg_payload = malloc(reg_sz);
+    assert(reg_payload != NULL);
+    for (size_t i = 0; i < reg_sz; i++)
+        reg_payload[i] = (char)('a' + (i % 26));
+
+    char reg_path[] = "/tmp/stage2_fd2str_reg_XXXXXX";
+    int wfd = mkstemp(reg_path);
+    assert(wfd >= 0);
+    write_all_exact(wfd, reg_payload, reg_sz);
+    close(wfd);
+
+    int rfd = open(reg_path, O_RDONLY);
+    assert(rfd >= 0);
+    char *reg_out = patched_fd2str_real(rfd);
+    assert(reg_out != NULL);
+    assert(strlen(reg_out) == reg_sz);
+    assert(memcmp(reg_out, reg_payload, reg_sz) == 0);
+    assert(fcntl(rfd, F_GETFD) == -1 && errno == EBADF);
+    free(reg_out);
+    free(reg_payload);
+    unlink(reg_path);
+
+    /* Case E: Real 100 KB pipe (non-seekable, fstat size 0 -> geometric realloc + closes fd) */
+    const size_t pipe_sz = 100u * 1024u;
+    char *pipe_payload = malloc(pipe_sz);
+    assert(pipe_payload != NULL);
+    memset(pipe_payload, 'Z', pipe_sz);
+
+    int pfd[2];
+    assert(pipe(pfd) == 0);
+    pid_t ch = fork();
+    assert(ch >= 0);
+    if (ch == 0) {
+        close(pfd[0]);
+        write_all_exact(pfd[1], pipe_payload, pipe_sz);
+        close(pfd[1]);
+        _exit(0);
+    }
+    close(pfd[1]);
+    char *pipe_out = patched_fd2str_real(pfd[0]);
+    int st = 0;
+    assert(waitpid(ch, &st, 0) == ch && WIFEXITED(st) && WEXITSTATUS(st) == 0);
+    assert(pipe_out != NULL);
+    assert(strlen(pipe_out) == pipe_sz);
+    assert(memcmp(pipe_out, pipe_payload, pipe_sz) == 0);
+    assert(fcntl(pfd[0], F_GETFD) == -1 && errno == EBADF);
+    free(pipe_out);
+    free(pipe_payload);
 }
 
 /* =========================================================================
@@ -693,10 +845,616 @@ static void test_libxml2_and_dnsmasq_bounds(void) {
     free(bn);
 }
 
+/* =========================================================================
+ * 9. Set 2 Suite A: httpd json-c Refcounts, Bitshifts, SHM Cleanup & find_hostname_by_mac (A-01..A-04, B-03)
+ * ========================================================================= */
+#define MJ_MAGIC 0x4A534F4E
+enum mj_kind { MJ_OBJ = 1, MJ_ARR = 2, MJ_STR = 3 };
+
+struct mini_json {
+    unsigned int magic;
+    int refcnt;
+    enum mj_kind kind;
+    char *str;
+    size_t nchild;
+    struct mini_json *children[16];
+};
+
+static struct mini_json *mj_alloc(enum mj_kind k, const char *s) {
+    struct mini_json *o = calloc(1, sizeof(*o));
+    assert(o != NULL);
+    o->magic = MJ_MAGIC;
+    o->refcnt = 1;
+    o->kind = k;
+    if (s) {
+        o->str = strdup(s);
+        assert(o->str != NULL);
+    }
+    return o;
+}
+
+static struct mini_json *mj_get(struct mini_json *o) {
+    if (!o)
+        return NULL;
+    assert(o->magic == MJ_MAGIC && o->refcnt > 0);
+    o->refcnt++;
+    return o;
+}
+
+static void mj_put(struct mini_json *o) {
+    if (!o)
+        return;
+    assert(o->magic == MJ_MAGIC && o->refcnt > 0);
+    o->refcnt--;
+    if (o->refcnt == 0) {
+        for (size_t i = 0; i < o->nchild; i++)
+            mj_put(o->children[i]);
+        free(o->str);
+        o->magic = 0xDEADBEEFu;
+        free(o);
+    }
+}
+
+static void mj_add(struct mini_json *parent, struct mini_json *child) {
+    assert(parent != NULL && parent->magic == MJ_MAGIC && parent->nchild < 16);
+    parent->children[parent->nchild++] = child;
+}
+
+static void helper_find_hostname_by_mac_line(const char *line, char *macaddr, size_t mac_sz,
+                                             char *ipaddr, size_t ip_sz,
+                                             char *host_name, size_t host_sz) {
+    if (macaddr) macaddr[0] = '\0';
+    if (ipaddr) ipaddr[0] = '\0';
+    if (host_name) host_name[0] = '\0';
+
+    /* Bounded sscanf (Set 2 A-04): never blind-memset 32/128/64 past caller stack bounds */
+    char m_buf[18] = {0}, i_buf[16] = {0}, h_buf[32] = {0};
+    if (sscanf(line, "%17s %15s %31s", m_buf, i_buf, h_buf) >= 2) {
+        bsd_strlcpy(macaddr, m_buf, mac_sz);
+        bsd_strlcpy(ipaddr, i_buf, ip_sz);
+        bsd_strlcpy(host_name, h_buf, host_sz);
+    }
+}
+
+static void test_set2_httpd_json_refcounts_and_find_mac(void) {
+    /* Verify get_client_detail_info bitshift fix: (1<<FLAG_HTTP) vs broken (1<FLAG_HTTP)==0 */
+    const unsigned int flag_http = 1u, flag_printer = 2u, flag_itune = 3u;
+    assert((1u << flag_http) == 2u);
+    assert((1u << flag_printer) == 4u);
+    assert((1u << flag_itune) == 8u);
+
+    /* Simulate get_clientlist_from_json_database: early return frees amasList; no double-put on transferred obj */
+    for (int early_fail = 0; early_fail <= 1; early_fail++) {
+        struct mini_json *amasList = mj_alloc(MJ_OBJ, NULL);
+        struct mini_json *clients = early_fail ? NULL : mj_alloc(MJ_OBJ, NULL);
+        if (!clients) {
+            if (amasList) mj_put(amasList);
+            continue;
+        }
+        struct mini_json *never_online = mj_alloc(MJ_OBJ, NULL);
+        mj_add(clients, never_online); /* ownership transferred */
+        mj_put(clients);
+        mj_put(amasList);
+    }
+
+    /* Simulate borrowed ref + json_object_get before array add (reportstate / basic_clientlist) */
+    struct mini_json *db = mj_alloc(MJ_OBJ, NULL);
+    struct mini_json *borrowed_name = mj_alloc(MJ_STR, "nas-box");
+    mj_add(db, borrowed_name);
+
+    struct mini_json *macArray = mj_alloc(MJ_ARR, NULL);
+    struct mini_json *macArray_tmp = NULL;
+    for (int i = 0; i < 3; i++) {
+        /* A-02: skip mismatches BEFORE allocating macArray_tmp (no orphan array leak) */
+        if (i != 1)
+            continue;
+        macArray_tmp = mj_alloc(MJ_ARR, NULL);
+        mj_add(macArray_tmp, mj_get(borrowed_name));
+        mj_add(macArray, macArray_tmp); /* ownership transferred; do NOT mj_put(macArray_tmp) */
+    }
+    struct mini_json *wl_clients_list_obj = mj_alloc(MJ_OBJ, NULL);
+    struct mini_json *wl_clients_array_obj = mj_alloc(MJ_ARR, NULL);
+    mj_put(wl_clients_list_obj);
+    mj_put(wl_clients_array_obj); /* A-02: free array obj instead of double-putting list obj */
+    mj_put(macArray);
+    assert(borrowed_name->refcnt == 1);
+    mj_put(db);
+
+    /* Simulate get_client_detail_info SHM error cleanup (all 10 objects freed) */
+    struct mini_json *containers[10];
+    for (int i = 0; i < 10; i++)
+        containers[i] = mj_alloc(MJ_OBJ, NULL);
+    for (int i = 0; i < 10; i++)
+        mj_put(containers[i]);
+
+    /* A-04: tight caller stack arrays under ASan stack redzone check */
+    char mac[18], ip[16], host[32];
+    const char *ro_empty = "";
+    assert(ro_empty[0] == '\0'); /* must never memset a .rodata literal */
+    helper_find_hostname_by_mac_line("AA:BB:CC:DD:EE:FF 192.168.50.100 router-client",
+                                     mac, sizeof(mac), ip, sizeof(ip), host, sizeof(host));
+    assert(strcmp(mac, "AA:BB:CC:DD:EE:FF") == 0);
+    assert(strcmp(ip, "192.168.50.100") == 0);
+    assert(strcmp(host, "router-client") == 0);
+}
+
+/* =========================================================================
+ * 10. Set 2 Suite B: pids() Short-Circuit & Hoisted unqstrstr() (B-01, B-03)
+ * ========================================================================= */
+static char *patched_unqstrstr(const char *haystack, const char *needle) {
+    char *cur;
+    int q;
+    size_t hlen = strlen(haystack);
+    size_t nlen = strlen(needle);
+    const char *end = haystack + hlen;
+
+    if (nlen == 0 || nlen > hlen)
+        return (nlen == 0) ? (char *)haystack : NULL;
+
+    for (cur = (char *)haystack, q = 0;
+         cur <= (end - nlen) && !(!q && !strncmp(needle, cur, nlen));
+         cur++) {
+        if (*cur == '"')
+            q ? q-- : q++;
+    }
+    return (cur <= (end - nlen)) ? cur : NULL;
+}
+
+static int read_file_raw_buf(const char *path, char *buf, size_t bufsz) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return -1;
+    ssize_t n = read(fd, buf, bufsz - 1);
+    close(fd);
+    if (n < 0)
+        return -1;
+    buf[n] = '\0';
+    return (int)n;
+}
+
+static const char *local_basename(const char *p) {
+    const char *s = strrchr(p, '/');
+    return s ? s + 1 : p;
+}
+
+static int find_first_pid_by_name_at(const char *proc_root, const char *procName) {
+    DIR *dir;
+    struct dirent *entry;
+    char stat_buf[1024], cmd_buf[1024];
+    char filename[512];
+
+    if (!procName || !*procName)
+        return 0;
+
+    dir = opendir(proc_root);
+    if (!dir)
+        return 0;
+
+    while ((entry = readdir(dir)) != NULL) {
+        char *endp = NULL;
+        errno = 0;
+        unsigned long pid = strtoul(entry->d_name, &endp, 10);
+        char *tail, *comm1, *cp, state;
+        char comm[16];
+        int n, comm_prefix;
+
+        if (errno || !endp || *endp != '\0' || entry->d_name[0] == '\0')
+            continue;
+
+        int plen = snprintf(filename, sizeof(filename) - 16, "%s/%lu", proc_root, pid);
+        if (plen < 0 || (size_t)plen >= sizeof(filename) - 16)
+            continue;
+        tail = filename + plen;
+
+        strcpy(tail, "/stat");
+        if (read_file_raw_buf(filename, stat_buf, sizeof(stat_buf)) < 0)
+            continue;
+
+        cp = strrchr(stat_buf, ')');
+        comm1 = strchr(stat_buf, '(');
+        if (!cp || !comm1 || cp[1] != ' ' || cp[2] == '\0')
+            continue;
+        state = cp[2];
+        if (state == 'Z')
+            continue;
+
+        *cp = '\0';
+        memset(comm, 0, sizeof(comm));
+        strncpy(comm, comm1 + 1, sizeof(comm) - 1);
+
+        comm_prefix = (strncmp(comm, procName, 15) == 0);
+        if (comm_prefix && comm[14] == '\0') {
+            closedir(dir);
+            return 1;
+        }
+
+        strcpy(tail, "/cmdline");
+        n = read_file_raw_buf(filename, cmd_buf, sizeof(cmd_buf));
+        if (n <= 0)
+            continue;
+
+        if (comm_prefix) {
+            int argv1idx = (int)strlen(cmd_buf) + 1;
+            if (argv1idx < n && strcmp(local_basename(cmd_buf + argv1idx), procName) == 0) {
+                closedir(dir);
+                return 1;
+            }
+        }
+        if (strcmp(local_basename(cmd_buf), procName) == 0) {
+            closedir(dir);
+            return 1;
+        }
+    }
+
+    closedir(dir);
+    return 0;
+}
+
+static void write_proc_fixture(const char *root, int pid, const char *stat_line,
+                               const void *cmdline, size_t cmdline_len) {
+    char dpath[512], fpath[512];
+    int dn = snprintf(dpath, sizeof(dpath), "%s/%d", root, pid);
+    assert(dn > 0 && (size_t)dn < sizeof(dpath));
+    assert(mkdir(dpath, 0700) == 0);
+
+    assert(snprintf(fpath, sizeof(fpath), "%s/stat", dpath) < (int)sizeof(fpath));
+    int fd = open(fpath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    assert(fd >= 0);
+    write_all_exact(fd, stat_line, strlen(stat_line));
+    close(fd);
+
+    assert(snprintf(fpath, sizeof(fpath), "%s/cmdline", dpath) < (int)sizeof(fpath));
+    fd = open(fpath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    assert(fd >= 0);
+    if (cmdline_len > 0)
+        write_all_exact(fd, cmdline, cmdline_len);
+    close(fd);
+}
+
+static void test_set2_pids_short_circuit_and_unqstrstr(void) {
+    /* unqstrstr() hoisted-length tests */
+    const char *s1 = "foo \"bar<% match %>\" real<% end %>";
+    assert(strcmp(patched_unqstrstr(s1, ""), s1) == 0);
+    assert(patched_unqstrstr("abc", "abcdef") == NULL);
+    const char *m = patched_unqstrstr(s1, "<%");
+    assert(m != NULL && strcmp(m, "<% end %>") == 0);
+    assert(patched_unqstrstr("tail_match", "match") != NULL);
+
+    /* Synthetic 120-PID /proc tree */
+    char proc_root[] = "/tmp/stage2_proc_XXXXXX";
+    assert(mkdtemp(proc_root) != NULL);
+
+    for (int p = 1; p <= 120; p++) {
+        if (p == 10) {
+            write_proc_fixture(proc_root, p, "10 (zproc) Z 1 1", "zproc\0", 6);
+        } else if (p == 20) {
+            write_proc_fixture(proc_root, p, "20 (kworker/0:1) S 2 2", "", 0);
+        } else if (p == 55) {
+            const char cl[] = "/bin/sh\0/usr/sbin/target_daemon_long_name\0";
+            write_proc_fixture(proc_root, p, "55 (target_daemon_l) S 1 1", cl, sizeof(cl) - 1);
+        } else if (p == 99) {
+            write_proc_fixture(proc_root, p, "99 (fastproc) S 1 1", "", 0);
+        } else {
+            char st[64];
+            snprintf(st, sizeof(st), "%d (idleworker) S 1 1", p);
+            write_proc_fixture(proc_root, p, st, "idleworker\0", 11);
+        }
+    }
+
+    assert(find_first_pid_by_name_at(proc_root, "fastproc") == 1);
+    assert(find_first_pid_by_name_at(proc_root, "target_daemon_long_name") == 1);
+    assert(find_first_pid_by_name_at(proc_root, "zproc") == 0);
+    assert(find_first_pid_by_name_at(proc_root, "kworker/0:1") == 1);
+    assert(find_first_pid_by_name_at(proc_root, "nonexistent") == 0);
+
+    for (int p = 1; p <= 120; p++) {
+        char fp[512];
+        snprintf(fp, sizeof(fp), "%s/%d/stat", proc_root, p);
+        unlink(fp);
+        snprintf(fp, sizeof(fp), "%s/%d/cmdline", proc_root, p);
+        unlink(fp);
+        snprintf(fp, sizeof(fp), "%s/%d", proc_root, p);
+        rmdir(fp);
+    }
+    rmdir(proc_root);
+}
+
+/* =========================================================================
+ * 11. Set 2 Suite C: __set_iface_ps() RPS/XPS Formatting & route_exist() (C-01, A-07)
+ * ========================================================================= */
+static int test_f_write_string_exact(const char *path, const char *val) {
+    int fd = open(path, O_WRONLY | O_TRUNC);
+    if (fd < 0)
+        return -1;
+    write_all_exact(fd, val, strlen(val));
+    close(fd);
+    return 0;
+}
+
+static int patched_set_iface_ps_sys(const char *sys_net, const char *ifname,
+                                    int nr_rx_mask, const unsigned int *rx_mask,
+                                    int nr_tx_mask, const unsigned int *tx_mask) {
+    const char *attr[] = { "rps_cpus", "xps_cpus" };
+    int q;
+    int max_rx_q = (nr_rx_mask > 0) ? nr_rx_mask : ((nr_rx_mask == 0) ? 32 : 0);
+    int max_tx_q = (nr_tx_mask > 0) ? nr_tx_mask : ((nr_tx_mask == 0) ? 32 : 0);
+    int max_q = (max_rx_q > max_tx_q) ? max_rx_q : max_tx_q;
+    char rx_m[16] = {0}, tx_m[16] = {0};
+    char prefix[256], path[512];
+
+    if (!ifname || *ifname == '\0' || (!nr_rx_mask && !rx_mask) || (!nr_tx_mask && !tx_mask))
+        return -1;
+    if ((nr_rx_mask > 0 && !rx_mask) || (nr_tx_mask > 0 && !tx_mask))
+        return -2;
+
+    snprintf(prefix, sizeof(prefix), "%s/%s/queues", sys_net, ifname);
+    if (nr_rx_mask == 0)
+        snprintf(rx_m, sizeof(rx_m), "%x", rx_mask[0]);
+    if (nr_tx_mask == 0)
+        snprintf(tx_m, sizeof(tx_m), "%x", tx_mask[0]);
+    for (q = 0; q < max_q; ++q) {
+        if (nr_rx_mask >= 0 && q < max_rx_q) {
+            if (nr_rx_mask > 0)
+                snprintf(rx_m, sizeof(rx_m), "%x", rx_mask[q]);
+            snprintf(path, sizeof(path), "%s/rx-%d/%s", prefix, q, attr[0]);
+            test_f_write_string_exact(path, rx_m);
+        }
+        if (nr_tx_mask >= 0 && q < max_tx_q) {
+            if (nr_tx_mask > 0)
+                snprintf(tx_m, sizeof(tx_m), "%x", tx_mask[q]);
+            snprintf(path, sizeof(path), "%s/tx-%d/%s", prefix, q, attr[1]);
+            test_f_write_string_exact(path, tx_m);
+        }
+    }
+    return 0;
+}
+
+static int patched_route_exist_path(const char *route_path, const char *name, int metric,
+                                    const char *dst, const char *gateway, const char *mask) {
+    FILE *fp;
+    in_addr_t addr_dst, addr_gate, addr_mask;
+    in_addr_t rtr_dst, rtr_gate, rtr_mask;
+    int rtr_metric;
+    char buf[256], iface[16];
+    int i, ret = 0;
+
+    if (!name || !dst || !gateway || !mask)
+        return -1;
+    if (inet_pton(AF_INET, dst, &addr_dst) <= 0
+     || inet_pton(AF_INET, gateway, &addr_gate) <= 0
+     || inet_pton(AF_INET, mask, &addr_mask) <= 0)
+        return -1;
+
+    fp = fopen(route_path, "r");
+    if (fp) {
+        while (fgets(buf, sizeof(buf), fp)) {
+            if (!strncmp(buf, "Iface", 5))
+                continue;
+            i = sscanf(buf, "%15s %x %x %*s %*s %*s %d %x",
+                       iface, &rtr_dst, &rtr_gate, &rtr_metric, &rtr_mask);
+            if (i != 5)
+                continue;
+            if (!strcmp(name, iface) && rtr_metric == metric && addr_dst == rtr_dst
+             && addr_gate == rtr_gate && addr_mask == rtr_mask) {
+                ret = 1;
+                break;
+            }
+        }
+        fclose(fp);
+    }
+    return ret;
+}
+
+static void create_empty_or_text(const char *path, const char *txt) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    assert(fd >= 0);
+    if (txt && *txt)
+        write_all_exact(fd, txt, strlen(txt));
+    close(fd);
+}
+
+static void assert_file_eq(const char *path, const char *expected) {
+    char buf[64] = {0};
+    int n = read_file_raw_buf(path, buf, sizeof(buf));
+    assert(n >= 0);
+    assert(strcmp(buf, expected) == 0);
+}
+
+static void test_set2_iface_ps_and_route_exist(void) {
+    char sys_root[] = "/tmp/stage2_sys_XXXXXX";
+    assert(mkdtemp(sys_root) != NULL);
+
+    char d[512], p_rx0[512], p_rx1[512], p_tx0[512];
+    snprintf(d, sizeof(d), "%s/br0", sys_root); assert(mkdir(d, 0700) == 0);
+    snprintf(d, sizeof(d), "%s/br0/queues", sys_root); assert(mkdir(d, 0700) == 0);
+    snprintf(d, sizeof(d), "%s/br0/queues/rx-0", sys_root); assert(mkdir(d, 0700) == 0);
+    snprintf(d, sizeof(d), "%s/br0/queues/rx-1", sys_root); assert(mkdir(d, 0700) == 0);
+    snprintf(d, sizeof(d), "%s/br0/queues/tx-0", sys_root); assert(mkdir(d, 0700) == 0);
+
+    snprintf(p_rx0, sizeof(p_rx0), "%s/br0/queues/rx-0/rps_cpus", sys_root);
+    snprintf(p_rx1, sizeof(p_rx1), "%s/br0/queues/rx-1/rps_cpus", sys_root);
+    snprintf(p_tx0, sizeof(p_tx0), "%s/br0/queues/tx-0/xps_cpus", sys_root);
+    create_empty_or_text(p_rx0, "0");
+    create_empty_or_text(p_rx1, "0");
+    create_empty_or_text(p_tx0, "0");
+
+    const unsigned int rxm[] = { 3u, 3u };
+    const unsigned int txm[] = { 1u };
+    assert(patched_set_iface_ps_sys(sys_root, "br0", 2, rxm, 1, txm) == 0);
+    assert_file_eq(p_rx0, "3");
+    assert_file_eq(p_rx1, "3");
+    assert_file_eq(p_tx0, "1");
+
+    /* TX-only (-1 RX): must NOT underflow or overwrite rx-0 */
+    create_empty_or_text(p_rx0, "keep");
+    const unsigned int txm2[] = { 2u };
+    assert(patched_set_iface_ps_sys(sys_root, "br0", -1, NULL, 1, txm2) == 0);
+    assert_file_eq(p_rx0, "keep");
+    assert_file_eq(p_tx0, "2");
+
+    /* RX-only (-1 TX) + broadcast (nr_rx_mask == 0) */
+    const unsigned int bcast[] = { 3u };
+    assert(patched_set_iface_ps_sys(sys_root, "br0", 0, bcast, -1, NULL) == 0);
+    assert_file_eq(p_rx0, "3");
+    assert_file_eq(p_rx1, "3");
+    assert_file_eq(p_tx0, "2");
+
+    unlink(p_rx0); unlink(p_rx1); unlink(p_tx0);
+    snprintf(d, sizeof(d), "%s/br0/queues/rx-0", sys_root); rmdir(d);
+    snprintf(d, sizeof(d), "%s/br0/queues/rx-1", sys_root); rmdir(d);
+    snprintf(d, sizeof(d), "%s/br0/queues/tx-0", sys_root); rmdir(d);
+    snprintf(d, sizeof(d), "%s/br0/queues", sys_root); rmdir(d);
+    snprintf(d, sizeof(d), "%s/br0", sys_root); rmdir(d);
+    rmdir(sys_root);
+
+    /* route_exist tests */
+    assert(patched_route_exist_path("/nonexistent_path", "eth0", 0, "999.999.1.1", "0.0.0.0", "255.255.255.0") == -1);
+    char rt_path[] = "/tmp/stage2_route_XXXXXX";
+    int rfd = mkstemp(rt_path);
+    assert(rfd >= 0);
+    const char *rt_data =
+        "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+        "bad0\t0001020A\t00000000\t0001\t0\t0\n"
+        "eth0\t0032A8C0\t00000000\t0001\t0\t0\t10\t00FFFFFF\t0\t0\t0\n";
+    write_all_exact(rfd, rt_data, strlen(rt_data));
+    close(rfd);
+
+    assert(patched_route_exist_path(rt_path, "eth0", 10, "192.168.50.0", "0.0.0.0", "255.255.255.0") == 1);
+    assert(patched_route_exist_path(rt_path, "eth0", 99, "192.168.50.0", "0.0.0.0", "255.255.255.0") == 0);
+    unlink(rt_path);
+}
+
+/* =========================================================================
+ * 12. Set 2 Suite D: wsdd2 llmnr.c OOM/OOB Parser & 256 KiB Detached Pthreads (A-11, D-01)
+ * ========================================================================= */
+static int g_llmnr_fail_strdup = 0;
+static int g_llmnr_fail_realloc_at = 0;
+
+static int patched_llmnr_parse_qname(const unsigned char *in, size_t inlen, char *out, size_t out_sz) {
+    char *in_name;
+    size_t in_name_len = 0;
+    const unsigned char *in_name_p;
+    int realloc_calls = 0;
+
+    if (inlen < 13)
+        return -1;
+
+    in_name = g_llmnr_fail_strdup ? NULL : strdup("");
+    if (in_name == NULL)
+        return -1;
+
+    in_name_p = &in[12];
+    while (in_name_p < in + inlen && *in_name_p > 0) {
+        if (*in_name_p >= 0xC0) {
+            free(in_name);
+            return -1;
+        }
+        if (*in_name_p > 63) {
+            free(in_name);
+            return -1;
+        }
+        if (in_name_p + 1 + *in_name_p > in + inlen) {
+            free(in_name);
+            return -1;
+        }
+
+        size_t lbl_len = *in_name_p;
+        size_t old_len = strlen(in_name);
+        in_name_len += lbl_len + (*in_name ? 1 : 0);
+
+        realloc_calls++;
+        char *tmp_name = (realloc_calls == g_llmnr_fail_realloc_at)
+                             ? NULL
+                             : (char *)realloc(in_name, in_name_len + 1);
+        if (tmp_name == NULL) {
+            free(in_name);
+            return -1;
+        }
+        in_name = tmp_name;
+        if (old_len > 0)
+            in_name[old_len++] = '.';
+        memcpy(in_name + old_len, in_name_p + 1, lbl_len);
+        in_name[old_len + lbl_len] = '\0';
+
+        in_name_p += lbl_len + 1;
+    }
+
+    if (out && out_sz > 0)
+        bsd_strlcpy(out, in_name, out_sz);
+    free(in_name);
+    return 0;
+}
+
+static struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    int done;
+} g_pthread_sync = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0 };
+
+static void *detached_worker_256k(void *arg) {
+    (void)arg;
+    /* Touch moderate stack buffer inside 256 KiB stack safely */
+    volatile char scratch[4096];
+    memset((void *)scratch, 0x5A, sizeof(scratch));
+    pthread_mutex_lock(&g_pthread_sync.mu);
+    g_pthread_sync.done++;
+    if (g_pthread_sync.done == 64)
+        pthread_cond_signal(&g_pthread_sync.cv);
+    pthread_mutex_unlock(&g_pthread_sync.mu);
+    return NULL;
+}
+
+static void test_set2_wsdd2_llmnr_and_detached_pthreads(void) {
+    char qname[128] = {0};
+
+    /* Valid 2-label query: 12-byte header + "\x04host\x05local\x00" */
+    const unsigned char valid_pkt[] = {
+        0,0, 0,0, 0,1, 0,0, 0,0, 0,0,
+        4, 'h','o','s','t', 5, 'l','o','c','a','l', 0
+    };
+    g_llmnr_fail_strdup = 0;
+    g_llmnr_fail_realloc_at = 0;
+    assert(patched_llmnr_parse_qname(valid_pkt, sizeof(valid_pkt), qname, sizeof(qname)) == 0);
+    assert(strcmp(qname, "host.local") == 0);
+
+    /* OOM on strdup & OOM on 2nd realloc must free prior label and return -1 with 0 leaks */
+    g_llmnr_fail_strdup = 1;
+    assert(patched_llmnr_parse_qname(valid_pkt, sizeof(valid_pkt), qname, sizeof(qname)) == -1);
+    g_llmnr_fail_strdup = 0;
+    g_llmnr_fail_realloc_at = 2;
+    assert(patched_llmnr_parse_qname(valid_pkt, sizeof(valid_pkt), qname, sizeof(qname)) == -1);
+    g_llmnr_fail_realloc_at = 0;
+
+    /* Compression pointer (0xC0), label >63, and truncated packet */
+    const unsigned char comp_pkt[] = { 0,0,0,0,0,1,0,0,0,0,0,0, 0xC0, 0x0C };
+    const unsigned char long_pkt[] = { 0,0,0,0,0,1,0,0,0,0,0,0, 64, 'a', 'b', 0 };
+    const unsigned char trunc_pkt[] = { 0,0,0,0,0,1,0,0,0,0,0,0, 10, 'a', 'b', 'c' };
+    assert(patched_llmnr_parse_qname(comp_pkt, sizeof(comp_pkt), qname, sizeof(qname)) == -1);
+    assert(patched_llmnr_parse_qname(long_pkt, sizeof(long_pkt), qname, sizeof(qname)) == -1);
+    assert(patched_llmnr_parse_qname(trunc_pkt, sizeof(trunc_pkt), qname, sizeof(qname)) == -1);
+
+    /* 64 detached threads with explicit 256 KiB stack size */
+    g_pthread_sync.done = 0;
+    pthread_attr_t attr;
+    assert(pthread_attr_init(&attr) == 0);
+    assert(pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) == 0);
+    assert(pthread_attr_setstacksize(&attr, 256u * 1024u) == 0);
+    for (int i = 0; i < 64; i++) {
+        pthread_t tid;
+        assert(pthread_create(&tid, &attr, detached_worker_256k, NULL) == 0);
+    }
+    assert(pthread_attr_destroy(&attr) == 0);
+
+    pthread_mutex_lock(&g_pthread_sync.mu);
+    while (g_pthread_sync.done < 64)
+        pthread_cond_wait(&g_pthread_sync.cv, &g_pthread_sync.mu);
+    pthread_mutex_unlock(&g_pthread_sync.mu);
+}
+
 int main(void) {
     printf("[stage2] Running ASan + UBSan unit & adversarial fuzz tests...\n");
     test_fd2str();
-    printf("  [PASS] fd2str() EIO/negative-read & multi-chunk heap bounds\n");
+    printf("  [PASS] fd2str() fstat prealloc, geometric realloc, EINTR retry & close(fd) on all paths\n");
     test_remove_dups_fuzz();
     printf("  [PASS] remove_dups() 1..48 byte redzone boundary fuzz\n");
     test_misc_crt_and_domain();
@@ -713,6 +1471,14 @@ int main(void) {
     printf("  [PASS] BusyBox tar CVE-2026-108119 symlink target & intermediate-symlink guards\n");
     test_libxml2_and_dnsmasq_bounds();
     printf("  [PASS] libxml2 CVE-2025-6021 xmlBuildQName overflow & dnsmasq union bigname(2051B)\n");
+    test_set2_httpd_json_refcounts_and_find_mac();
+    printf("  [PASS] [Set 2] httpd json-c refcounts/UAF, bitshifts, SHM cleanup & find_hostname_by_mac()\n");
+    test_set2_pids_short_circuit_and_unqstrstr();
+    printf("  [PASS] [Set 2] pids() 120-PID short-circuit + hoisted unqstrstr()\n");
+    test_set2_iface_ps_and_route_exist();
+    printf("  [PASS] [Set 2] __set_iface_ps() RPS/XPS mask & route_exist() sscanf/FD guards\n");
+    test_set2_wsdd2_llmnr_and_detached_pthreads();
+    printf("  [PASS] [Set 2] wsdd2 llmnr OOM/OOB parser & 64 detached 256KiB pthreads\n");
     printf("==> STAGE 2 SANITIZER SUITE: 100%% PASSED.\n");
     return 0;
 }

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Stage 1 Pre-Build Closed-Source .o Blob Symbol & Build-Flag Contract Verifier.
 
-Inspects all prebuilt Broadcom/ASUS/TrendMicro object blobs linked into `httpd` and `rc`
-(`httpd/prebuild/RT-AC86U/*.o` and `rc/prebuild/RT-AC86U/*.o`) using `readelf`:
+Inspects all prebuilt Broadcom/ASUS/TrendMicro object blobs linked into `httpd`, `rc`,
+and `shared` (`httpd/prebuild/RT-AC86U/*.o`, `rc/prebuild/RT-AC86U/*.o`, and
+`shared/prebuild/RT-AC86U/*.o`) using `readelf`:
   1. Verifies RT-AC86U `target.mak` keeps ABI-coupled flags (`NATNL_AICLOUD=y`,
      `NATNL_AIHOME=y`, `BWDPI=y`, `AMAS=y`, `SW_HW_AUTH=y`, `UUPLUGIN=y`) while stripping
      only isolated daemons (`WEBDAV=n`, `SMARTSYNCBASE=n`, `TOR=n`, `MEDIASRV=n`,
@@ -10,9 +11,11 @@ Inspects all prebuilt Broadcom/ASUS/TrendMicro object blobs linked into `httpd` 
   2. Verifies every prebuilt `.o` is 32-bit ARM EABI5 (zero hard-float ABI mismatch).
   3. Extracts every `GLOBAL UND` symbol imported by those `.o` blobs and proves:
      - Zero blob-imported functions/globals defined in `httpd`, `rc`, or `shared` were
-       deleted or renamed by our patches (`001..005`).
+       deleted or renamed by our patches (`001..009`, or `001..005` when `APPLY_SET2=0`).
      - Zero blob-imported definitions in `httpd`, `rc`, or `shared` live exclusively inside
        `#ifdef` guards for our disabled `RTCONFIG_*` flags.
+  4. Verifies Broadcom hardware acceleration (`pktrunner` / `pktflow` Flow Cache)
+     is never disabled by any patch.
 """
 
 from __future__ import annotations
@@ -190,6 +193,30 @@ def check_disabled_ifdef_exclusivity(src_files: list[str], target_symbols: set[s
     return violations
 
 
+def check_runner_flow_cache_preserved(patches: list[str]) -> None:
+    """Fail closed if any added patch line attempts to disable Broadcom Runner or Flow Cache."""
+    forbidden_patterns = (
+        re.compile(r"\b(?:rmmod|modprobe\s+-r)\b.*\b(?:pktrunner|pktflow|fc)\b"),
+        re.compile(r'["\']?(?:runner_disable|fc_disable)["\']?\s*[=:,]\s*["\']?1["\']?'),
+        re.compile(r"/proc/fc/(?:ctrl/)?disable"),
+        re.compile(r"\bfcctl\s+disable\b"),
+        re.compile(r"^#\s*CONFIG_BCM_(?:PKTRUNNER|PKTFLOW)\s+is not set"),
+    )
+    for p in patches:
+        pname = os.path.basename(p)
+        with open(p, "r", encoding="utf-8", errors="replace") as fh:
+            for lineno, line in enumerate(fh, 1):
+                if not line.startswith("+") or line.startswith("+++ "):
+                    continue
+                added = line[1:].strip()
+                for pat in forbidden_patterns:
+                    if pat.search(added):
+                        raise RuntimeError(
+                            f"{pname}:{lineno}: added line threatens Broadcom Runner/Flow Cache: {added}"
+                        )
+    print(f"[stage1:accel] Verified Broadcom Runner (pktrunner) & Flow Cache (pktflow) preserved across {len(patches)} patches.")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--merlin-dir", required=True, help="Path to asuswrt-merlin.ng checkout")
@@ -199,6 +226,7 @@ def main() -> int:
 
     merlin_dir = os.path.abspath(args.merlin_dir)
     patch_dir = os.path.abspath(args.patch_dir)
+    apply_set2 = os.environ.get("APPLY_SET2", "1") == "1"
     readelf_bin = shutil.which("arm-buildroot-linux-gnueabi-readelf") or shutil.which("readelf")
     if not readelf_bin:
         print("FATAL: readelf not found in PATH", file=sys.stderr)
@@ -207,9 +235,13 @@ def main() -> int:
     blobs = sorted(
         glob.glob(os.path.join(merlin_dir, "release/src/router/httpd/prebuild/RT-AC86U/*.o"))
         + glob.glob(os.path.join(merlin_dir, "release/src/router/rc/prebuild/RT-AC86U/*.o"))
+        + glob.glob(os.path.join(merlin_dir, "release/src/router/shared/prebuild/RT-AC86U/*.o"))
     )
-    if len(blobs) < 2:
-        print(f"FATAL: Expected RT-AC86U prebuilt .o blobs under httpd/rc, found {len(blobs)}", file=sys.stderr)
+    if len(blobs) < 55:
+        print(
+            f"FATAL: Expected >=55 RT-AC86U prebuilt .o blobs under httpd/rc/shared, found {len(blobs)}",
+            file=sys.stderr,
+        )
         return 1
 
     ext_und, blob_defined = extract_blob_symbols(blobs, readelf_bin)
@@ -218,7 +250,13 @@ def main() -> int:
         f"({len(blob_defined)} internal defs, {len(ext_und)} external GLOBAL UND imports)."
     )
 
-    patches = sorted(glob.glob(os.path.join(patch_dir, "*.patch")))
+    all_patches = sorted(glob.glob(os.path.join(patch_dir, "*.patch")))
+    if apply_set2:
+        patches = all_patches
+    else:
+        patches = [p for p in all_patches if re.match(r"^00[1-5]-", os.path.basename(p))]
+    check_runner_flow_cache_preserved(patches)
+
     touched_rels: set[str] = set()
     for p in patches:
         with open(p, "r", encoding="utf-8", errors="replace") as fh:

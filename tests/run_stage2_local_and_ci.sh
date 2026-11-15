@@ -18,6 +18,7 @@ gcc -std=gnu11 -O1 -g \
     -fno-omit-frame-pointer \
     -Wall -Wextra -Werror \
     "${SCRIPT_DIR}/stage2_asan_unit_tests.c" \
+    -lpthread \
     -o "${TMP_BIN}/stage2_asan_runner"
 
 ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:strict_string_checks=1" \

@@ -2,6 +2,10 @@
 
 Self-contained patchset, dependency backport orchestrator, 5-stage fail-closed verification suite, and GitHub Actions CI build pipeline for the **ASUS RT-AC86U** (`BCM4906` Cortex-A53 / `94908HND`), built on `Asuswrt-Merlin 386.14_2` (`6a5df61aab6f3fa2dffc518994d42e4f2a27fb2b`).
 
+## Branches & Approval Sets
+- **`main` / `set1-baseline` (`v386.14_2-sec2026-set1`):** Approved **Set 1** security backports, CVE fixes, NVRAM/JFFS longevity protections, and ARMv8 Crypto/conntrack tuning (`patches/001..005`).
+- **`set2-static-opt` (This Branch):** Set 1 **plus** all **29 Set 2 static-analysis CPU, RAM, memory-leak, UAF, and `BCM4906` SMP/IRQ/RPS optimizations** (`patches/006..009` + `wsdd2` `llmnr.c` OOM guard `A-11`, plus the OpenVPN `.c`/`.h`/`Makefile.am` + `autogen.sh` CI backport fix). Broadcom **`Runner` (`pktrunner`) and `Flow Cache` (`pktflow`/`fc`) remain 100% enabled** in both sets. Use `scripts/apply_backports.sh --set1-only` (or `apply_set2_optimizations: false` in `workflow_dispatch`) for A/B Set 1 comparison builds.
+
 ---
 
 ## What This Build Changes
@@ -32,11 +36,17 @@ Self-contained patchset, dependency backport orchestrator, 5-stage fail-closed v
 - **`004-ac86u-longevity-nvram-dcd-jffs.patch`:** Protects `128 KB` `/data/.kernel_nvram.setting` (`87.5%` headroom warning + `rstats` `*nvram` $\rightarrow$ `/jffs/` auto-migration), suppresses `dcd` `print-fatal-signals` log spam + gates `dcd` on `TM_EULA=1`, and cuts `/jffs/syslog.log` NAND wear by `30x` (`60s` $\rightarrow$ `30m`).
 - **`005-bcm4906-perf-crypto-sysctl-makefile.patch`:** Enables 64-bit kernel `CONFIG_ARM64_CRYPTO=y` (`AES`, `GHASH/PMULL`, `SHA1/2`, `CRC32`), `-march=armv8-a+crc+crypto -mtune=cortex-a53` on standalone daemons, `cpu_wait=1` idle SoC cooling (`-6 to -10 °C`), and `ct_max=65536` / RFC 5382 conntrack tuning while preserving `Runner` + `Flow Cache` `~940 Mbps` HW NAT.
 
+### 4. Set 2 Static-Analysis CPU, Memory, Leak & BCM4906 SMP/RPS Optimizations (`patches/006..009`, `set2-static-opt` Branch)
+- **`006-httpd-json-uaf-leaks-and-ej-perf.patch`:** Fixes `json-c` double-free/UAF and leak paths (`get_multifilter_info`, `get_client_detail_info` bitshifts `(1<<FLAG_*)` & 10-object SHM error cleanup, `ej_get_clientlist_*`, `get_basic_clientlist_info`), eliminates `find_hostname_by_mac()` stack/RODATA OOB `memset`, replaces `/tmp/output.txt` & `cat /proc/modules | grep pktrunner` shell forks with C `popen`/`/proc/modules` scanning, eliminates `O(N*M)` `unqstrstr()`, adds 8 KiB `setvbuf` on `.asp` reads, skips unnecessary JSON parsing on empty POSTs, and moves `httpd` `64 KB` stack/static-zero buffers to lazy `.bss` / `calloc`.
+- **`007-shared-pids-fd2str-and-fd-leaks.patch`:** Rewrites `pids()` with a direct `comm`-first + `/proc/<pid>/cmdline` short-circuit scanner (`1x` `readdir` pass), upgrades `fd2str()` to `fstat` preallocation + geometric growth + `EINTR` retry, fixes `__set_iface_ps()` pointer arithmetic (`rx_mask[q]`, `nr_rx_mask == -1` TX-only underflow), and closes leaked sockets/FILE/DIR handles across `shared/` & `libdisk/`.
+- **`008-rc-ddns-pthread-timers-and-daemons.patch`:** Caps `netool`/`rmd`/`linux_timer_ax`/`wlif_utils*` detached `pthread` stacks at `256 KiB` + fixes `vpopen()` zombie/FD leaks, adds NVRAM-overridable default-off controls for optional telemetry/discovery (`enable_diag`, `aae_disable_force`, `asd_disable`, `mdns_enable`), batches WireGuard routing via `ip -batch`, optimizes `check_watchdog` / `erp_monitor` / `auto_firmware_check_merlin`, fixes `asus_ddns`/`rstats`/`cstats`/`route_exist`/`services.c` SQL leaks, and moves `adjust_merlin_config()` `64 KB` buffer off stack.
+- **`009-bcm4906-smp-rps-vm-sqlite-ovpn.patch`:** Pins `bcmsw_rx` (`0x1`) & `skb_free_task` (`0x2`), balances PCIe WLAN IRQs (`1` / `2`) and software fallback RPS (`br0`/`eth0`, `rps_sock_flow_entries=32768`) without touching `pktrunner`/`pktflow`, pins `smbd` to Core 1, adds VM dirty-byte & `somaxconn=512`/`netdev_max_backlog=4096` sysctls, tunes SQLite 3.54.1 cache/tempstore, sets `sndbuf/rcvbuf 524288` + UDP `fast-io` on OpenVPN, and enables Samba 3.6 `getwd cache` / `max xmit`.
+
 ---
 
 ## 5-Stage Fail-Closed Automated Verification Pipeline (`tests/`)
 
-1. **`tests/stage1_prebuild_gate.sh` (`check_blob_contracts.py` + `abi_asserts.c`):** Verifies zero-fuzz patch application, audits all 41 closed-source `.o` blobs (`639` `GLOBAL UND` symbols) against our `target.mak` flags and C diffs, and runs cross-compiler soft-float / `struct nvram_tuple` / AArch64 crypto `_Static_assert`s.
+1. **`tests/stage1_prebuild_gate.sh` (`check_blob_contracts.py` + `abi_asserts.c`):** Verifies zero-fuzz patch application, audits all **55** closed-source `.o` blobs (`httpd`, `rc`, `shared`) + Runner/Flow Cache preservation against our `target.mak` flags and C diffs, and runs cross-compiler soft-float / `struct nvram_tuple` / AArch64 crypto `_Static_assert`s.
 2. **`tests/run_stage2_local_and_ci.sh` (`stage2_asan_unit_tests.c`):** Compiles & executes unit/fuzz tests under `GCC AddressSanitizer + UBSan`, `GCC -fanalyzer`, and `cppcheck`.
 3. **`tests/stage3_rootfs_elf_ko_audit.py`:** Audits 100% of built ELF binaries/`.so` libraries (`DT_NEEDED` + transitive `UND` symbol closure, soft-float `0x5000200` vs 64-bit `ebtables`, `libexpat.so` parity, stripped-bloat absence) and 100% of `4.1.27` `.ko` kernel modules (`vermagic` + 64-bit `__versions` symbol CRCs against `Module.symvers`).
 4. **`tests/stage4_qemu_smoke.sh`:** Runs the cross-compiled ARM/AArch64 binaries live under `qemu-arm-static -cpu cortex-a53` (`openssl`, `dnsmasq --test` with KSK `38696`, `dropbear`, `openvpn --genkey`, `sqlite3`, `curl`, `wget`, `miniupnpd`, `busybox`, `ebtables`, plus `node --check` on `.asp` JS).

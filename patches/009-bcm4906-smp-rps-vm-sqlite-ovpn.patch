@@ -1,0 +1,190 @@
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index ef9c5e7..7c73b3f 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -5192,11 +5192,11 @@ endif
+ 
+ sqlite/stamp-h1:
+ 	cd sqlite && autoreconf -i -f && \
+-	CC=$(CC) CFLAGS="$(if $(RTCONFIG_DEBUG),-g -Wall,-O2) $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc+crypto -mtune=cortex-a53,$(EXTRACFLAGS)) -ffunction-sections -fdata-sections -fPIC" \
++	CC=$(CC) CFLAGS="$(if $(RTCONFIG_DEBUG),-g -Wall,-O2) $(if $(HND_ROUTER),$(filter-out -march=% -D__ARM_ARCH_%,$(EXTRACFLAGS)) -march=armv8-a+crc+crypto -mtune=cortex-a53,$(EXTRACFLAGS)) -ffunction-sections -fdata-sections -fPIC -DSQLITE_TEMP_STORE=2 -DSQLITE_DEFAULT_CACHE_SIZE=-512 -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_MAX_EXPR_DEPTH=0" \
+ 		LDFLAGS="-ffunction-sections -fdata-sections -Wl,--gc-sections -lpthread -ldl" \
+ 		$(CONFIGURE) --prefix=/usr --enable-shared --enable-static \
+ 		--disable-readline --disable-dynamic-extensions --enable-threadsafe \
+-		--disable-dependency-tracking
++		--enable-tempstore=yes --disable-dependency-tracking
+ 	touch $@
+ 
+ sqlite: sqlite/stamp-h1
+diff --git a/release/src/router/libdisk/write_smb_conf.c b/release/src/router/libdisk/write_smb_conf.c
+index 1db60cd..82df88f 100644
+--- a/release/src/router/libdisk/write_smb_conf.c
++++ b/release/src/router/libdisk/write_smb_conf.c
+@@ -339,6 +339,10 @@ int main(int argc, char *argv[])
+ #endif
+ 
+ 	if(!nvram_get_int("stop_samba_speedup")){
++#if defined(RTCONFIG_SAMBA36X)
++		fprintf(fp, "getwd cache = yes\n");
++		fprintf(fp, "max xmit = 65535\n");
++#endif
+ #if defined(RTCONFIG_SAMBA36X) || defined(RTCONFIG_SOC_IPQ8064) || defined(RTCONFIG_SOC_IPQ8074)
+ 		fprintf(fp, "socket options = IPTOS_LOWDELAY TCP_NODELAY SO_KEEPALIVE\n");
+ #elif defined(RTCONFIG_ALPINE)
+diff --git a/release/src/router/libovpn/openvpn_setup.c b/release/src/router/libovpn/openvpn_setup.c
+index 4ff1838..79b59a2 100644
+--- a/release/src/router/libovpn/openvpn_setup.c
++++ b/release/src/router/libovpn/openvpn_setup.c
+@@ -365,6 +365,12 @@ int ovpn_write_server_config(ovpn_sconf_t *sconf, int unit) {
+ #endif
+ 			fprintf(fp, "proto udp4\n");
+ 		fprintf(fp, "multihome\n");
++		if (!strstr(sconf->custom, "sndbuf") && !strstr(sconf->custom, "rcvbuf")) {
++			fprintf(fp, "sndbuf 524288\n");
++			fprintf(fp, "rcvbuf 524288\n");
++		}
++		if (!strstr(sconf->custom, "fast-io") && !strstr(sconf->custom, "shaper") && !nvram_get_int("qos_enable"))
++			fprintf(fp, "fast-io\n");
+ 		fprintf(fp_client, "proto udp\n");
+ 	} else {
+ #ifdef RTCONFIG_IPV6
+@@ -643,6 +649,14 @@ int ovpn_write_client_config(ovpn_cconf_t *cconf, int unit) {
+ 	fprintf(fp, "dev %s\n", cconf->if_name);
+ 	fprintf(fp, "txqueuelen 1000\n");
+ 	fprintf(fp, "proto %s\n", cconf->proto);
++	if (!strncmp(cconf->proto, "udp", 3)) {
++		if (!strstr(cconf->custom, "sndbuf") && !strstr(cconf->custom, "rcvbuf")) {
++			fprintf(fp, "sndbuf 524288\n");
++			fprintf(fp, "rcvbuf 524288\n");
++		}
++		if (!strstr(cconf->custom, "fast-io") && !strstr(cconf->custom, "shaper") && !nvram_get_int("qos_enable"))
++			fprintf(fp, "fast-io\n");
++	}
+ 
+ 	fprintf(fp, "remote %s %d\n", cconf->addr, cconf->port);
+ 	if (cconf->auth_mode == OVPN_AUTH_STATIC) {
+diff --git a/release/src/router/rc/sysdeps/init-broadcom.c b/release/src/router/rc/sysdeps/init-broadcom.c
+index fd22b38..00305eb 100644
+--- a/release/src/router/rc/sysdeps/init-broadcom.c
++++ b/release/src/router/rc/sysdeps/init-broadcom.c
+@@ -98,6 +98,9 @@
+ void wl_thread_affinity_update(void);
+ #endif
+ #endif
++#if defined(HND_ROUTER) && (defined(RTAC86U) || defined(GTAC2900))
++static void bcm4906_tune_smp_and_rps(void);
++#endif
+ 
+ #ifdef BCM_BSD
+ void smart_connect_sync_config(int unit);
+@@ -4451,6 +4454,9 @@ void init_wl(void)
+ 	wl_thread_affinity_update();
+ #endif
+ #endif
++#if defined(HND_ROUTER) && (defined(RTAC86U) || defined(GTAC2900))
++	bcm4906_tune_smp_and_rps();
++#endif
+ #if defined(RTCONFIG_HND_ROUTER_AX)
+ 	set_wltxpower();
+ #endif
+@@ -4594,6 +4600,9 @@ void init_wl_compact(void)
+ 	wl_thread_affinity_update();
+ #endif
+ #endif
++#if defined(HND_ROUTER) && (defined(RTAC86U) || defined(GTAC2900))
++	bcm4906_tune_smp_and_rps();
++#endif
+ #if defined(RTCONFIG_HND_ROUTER_AX)
+ 	set_wltxpower();
+ #endif
+@@ -5197,6 +5206,58 @@ void tweak_process_affinity(pid_t pid, unsigned int cpumask)
+ 	sched_setaffinity(pid, sizeof(cpu_set_t), &cpuset);
+ }
+ 
++#if defined(RTAC86U) || defined(GTAC2900)
++static void bcm4906_tune_smp_and_rps(void)
++{
++	pid_t pid;
++	FILE *fp;
++	char line[256];
++	int wl_idx = 0;
++
++	if (nvram_get_int("cpu_affinity_disable"))
++		return;
++
++	/* Pin switch RX vs SKB free across dual Cortex-A53 cores without touching Runner/Flow Cache */
++	if ((pid = get_pid_by_thrd_name((char *)"bcmsw_rx")) > 0)
++		tweak_process_affinity(pid, 1);
++	if ((pid = get_pid_by_thrd_name((char *)"skb_free_task")) > 0)
++		tweak_process_affinity(pid, 2);
++
++	if ((fp = fopen("/proc/interrupts", "r")) != NULL) {
++		while (fgets(line, sizeof(line), fp) != NULL) {
++			char *p = line, *endp = NULL;
++			unsigned long irq;
++			char irq_path[64];
++			const char *mask;
++
++			while (*p == ' ' || *p == '\t')
++				p++;
++			irq = strtoul(p, &endp, 10);
++			if (endp == p || *endp != ':')
++				continue;
++
++			if (!(strstr(line, "dhd") || strstr(line, "wl0") || strstr(line, "wl1") || strstr(line, "wl2")))
++				continue;
++
++			snprintf(irq_path, sizeof(irq_path), "/proc/irq/%lu/smp_affinity", irq);
++			mask = (wl_idx & 1) ? "2" : "1";
++			f_write_string(irq_path, mask, 0, 0);
++			wl_idx++;
++		}
++		fclose(fp);
++	}
++
++	/* Configure software fallback RPS/RFS across both CPUs (Runner/Flow Cache stays 100% active) */
++	f_write_string("/proc/sys/net/core/rps_sock_flow_entries", "32768", 0, 0);
++	set_iface_ps("br0", 3);
++	set_iface_ps("eth0", 3);
++	if (access("/sys/class/net/br0/queues/rx-0/rps_flow_cnt", W_OK) == 0)
++		f_write_string("/sys/class/net/br0/queues/rx-0/rps_flow_cnt", "4096", 0, 0);
++	if (access("/sys/class/net/eth0/queues/rx-0/rps_flow_cnt", W_OK) == 0)
++		f_write_string("/sys/class/net/eth0/queues/rx-0/rps_flow_cnt", "4096", 0, 0);
++}
++#endif
++
+ void init_others(void)
+ {
+ #if defined(RTCONFIG_HND_ROUTER_AX_6756)
+@@ -5210,6 +5271,10 @@ void init_others(void)
+ 	f_write_string("/proc/sys/net/core/rmem_default", "262144", 0, 0);
+ 	f_write_string("/proc/sys/net/core/rmem_max", "1048576", 0, 0);
+ 	f_write_string("/proc/sys/vm/vfs_cache_pressure", "150", 0, 0);
++	f_write_string("/proc/sys/vm/dirty_background_bytes", "4194304", 0, 0);
++	f_write_string("/proc/sys/vm/dirty_bytes", "16777216", 0, 0);
++	f_write_string("/proc/sys/net/core/netdev_max_backlog", "4096", 0, 0);
++	f_write_string("/proc/sys/net/core/somaxconn", "512", 0, 0);
+ 
+ #ifdef GTAC2900
+ 	update_cfe_ac2900();
+@@ -5219,6 +5284,7 @@ void init_others(void)
+ 		system("pwr config --wait off");
+ 	else
+ 		system("pwr config --wait on");
++	bcm4906_tune_smp_and_rps();
+ #endif
+ #if defined(RTAX88U) || defined(RTAX92U)
+ 	if(nvram_match("HwVer", "1.0")) {
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 1538559..93e81df 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -3502,7 +3502,7 @@ start_samba(void)
+ #endif
+ #endif
+ 
+-#if defined(SMP) && !defined(HND_ROUTER)
++#if defined(SMP) && (!defined(HND_ROUTER) || defined(RTAC86U) || defined(GTAC2900))
+ #if defined(RTCONFIG_BCMARM) || defined(RTCONFIG_SOC_IPQ8064) || defined(RTCONFIG_SOC_IPQ8074)
+ #if defined(RTCONFIG_HND_ROUTER_AX_675X) || defined(BCM6750) || defined(BCM6756) || defined(BCM6855)
+ 	taskset_ret = -1;
