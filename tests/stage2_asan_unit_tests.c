@@ -185,7 +185,8 @@ static void test_fd2str(void) {
     g_mock_call_idx = 0;
     g_mock_payload = "unused";
     g_mock_offset = 0;
-    assert(patched_fd2str_mock(42, test_mock_read) == NULL);
+    char *err_a = patched_fd2str_mock(42, test_mock_read);
+    assert(err_a == NULL);
 
     char big[700];
     memset(big, 'A', sizeof(big) - 1);
@@ -195,7 +196,8 @@ static void test_fd2str(void) {
     g_mock_call_idx = 0;
     g_mock_payload = big;
     g_mock_offset = 0;
-    assert(patched_fd2str_mock(42, test_mock_read) == NULL);
+    char *err_b = patched_fd2str_mock(42, test_mock_read);
+    assert(err_b == NULL);
 
     /* Case B: EINTR retry + multi-chunk geometric growth succeeds with 0 leaks */
     g_mock_eintr_on_call = 1;
@@ -1441,7 +1443,8 @@ static void test_set2_wsdd2_llmnr_and_detached_pthreads(void) {
     assert(pthread_attr_setstacksize(&attr, 256u * 1024u) == 0);
     for (int i = 0; i < 64; i++) {
         pthread_t tid;
-        assert(pthread_create(&tid, &attr, detached_worker_256k, NULL) == 0);
+        int pt_rc = pthread_create(&tid, &attr, detached_worker_256k, NULL);
+        assert(pt_rc == 0);
     }
     assert(pthread_attr_destroy(&attr) == 0);
 
