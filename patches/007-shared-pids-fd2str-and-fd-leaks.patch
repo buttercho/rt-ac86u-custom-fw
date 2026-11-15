@@ -571,14 +571,14 @@ index f24b43b..38eda71 100644
  
 -				sscanf(buf, "UUID: %s", id->uuid);
 +				if (sscanf(buf, "UUID: %255s", tmp_val) == 1)
-+					strlcpy(id->uuid, tmp_val, sizeof(id->uuid));
++					snprintf(id->uuid, sizeof(id->uuid), "%s", tmp_val);
  				break;
  			}
 -			else if(!strncmp(buf, "Name", 4))
 -				sscanf(buf, "Name: %s %*s", id->label);
 +			else if(!strncmp(buf, "Name", 4)) {
 +				if (sscanf(buf, "Name: %255s %*s", tmp_val) == 1)
-+					strlcpy(id->label, tmp_val, sizeof(id->label));
++					snprintf(id->label, sizeof(id->label), "%s", tmp_val);
 +			}
  		}
 -		fclose(fp);
