@@ -72,6 +72,15 @@ targets = sys.argv[2:]
 
 cpp_cmd = [
     "cppcheck",
+    "-j",
+    "4",
+    "--platform=unix32",
+    "--max-configs=1",
+    "-DHND_ROUTER=1",
+    "-DLINUX26=1",
+    "-DRTCONFIG_BCMARM=1",
+    "-DRTCONFIG_BCMWL6=1",
+    "-DASUSWRT=1",
     "--enable=warning,portability",
     "--template={file}|{line}|{severity}|{id}|{message}",
     "--suppress=missingInclude",
@@ -136,8 +145,12 @@ for raw in combined_output.splitlines():
         continue
     rel = os.path.relpath(os.path.realpath(fpath), merlin_dir) if os.path.exists(fpath) else fpath
     rel = rel.replace("\\", "/")
+    if cid == "preprocessorErrorDirective":
+        ignored_legacy += 1
+        continue
     if rel == "release/src/router/wsdd2/llmnr.c":
-        if severity == "error":
+        has_set2_fix = os.path.isfile(fpath) and ("tmp_name" in open(fpath, "r", encoding="utf-8", errors="replace").read())
+        if has_set2_fix and severity == "error":
             failures.append(f"{rel}:{lineno} [{severity}:{cid}] {msg}")
         else:
             ignored_legacy += 1

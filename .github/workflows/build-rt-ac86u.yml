@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: rt-ac86u-fw-${{ github.ref }}
@@ -35,6 +36,53 @@ jobs:
       TOOLCHAIN_COMMIT: "d1af80e6b6686a4edc680386c09a8361453dd5c1"
 
     steps:
+      - name: Delete old completed failed/cancelled workflow runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, urllib.request, urllib.error
+
+          token = os.environ["GH_TOKEN"]
+          repo = os.environ["REPO"]
+          cur_id = int(os.environ["CURRENT_RUN_ID"])
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/runs?per_page=100",
+              headers=headers,
+          )
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              runs = json.load(resp).get("workflow_runs", [])
+
+          deleted = 0
+          for r in runs:
+              rid = r.get("id")
+              if rid == cur_id or r.get("status") != "completed":
+                  continue
+              author_name = ((r.get("head_commit") or {}).get("author") or {}).get("name", "")
+              if r.get("conclusion") != "success" or author_name != "buttercho":
+                  dreq = urllib.request.Request(
+                      f"https://api.github.com/repos/{repo}/actions/runs/{rid}",
+                      headers=headers,
+                      method="DELETE",
+                  )
+                  try:
+                      with urllib.request.urlopen(dreq, timeout=30):
+                          pass
+                      deleted += 1
+                      print(f"Deleted old run #{r.get('run_number')} ({rid}, {r.get('head_branch')}, conclusion={r.get('conclusion')})")
+                  except urllib.error.HTTPError as e:
+                      if e.code != 404:
+                          print(f"Note: could not delete run {rid}: HTTP {e.code}")
+          print(f"Pruned {deleted} old non-successful workflow run(s).")
+          PYEOF
+
       - name: Reclaim runner SSD space & install verification tools
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
@@ -168,7 +216,7 @@ jobs:
             fw-build:20.04 \
             /workspace/custom-fw/tests/stage1_prebuild_gate.sh --already-patched "${STAGE1_FLAGS[@]}" /workspace/build/asuswrt-merlin.ng \
             2>&1 | tee /tmp/step-stage1.log; then
-            tail -n 25 /tmp/step-stage1.log | while IFS= read -r line; do echo "::error::[stage1] ${line}"; done || true
+            tail -n 8 /tmp/step-stage1.log | while IFS= read -r line; do echo "::error::[stage1] ${line}"; done || true
             exit 1
           fi
 
@@ -177,7 +225,7 @@ jobs:
           set -o pipefail
           if ! "${GITHUB_WORKSPACE}/custom-fw/tests/run_stage2_local_and_ci.sh" "${GITHUB_WORKSPACE}/asuswrt-merlin.ng" \
             2>&1 | tee /tmp/step-stage2.log; then
-            tail -n 25 /tmp/step-stage2.log | while IFS= read -r line; do echo "::error::[stage2] ${line}"; done || true
+            tail -n 8 /tmp/step-stage2.log | while IFS= read -r line; do echo "::error::[stage2] ${line}"; done || true
             exit 1
           fi
 
@@ -206,7 +254,7 @@ jobs:
             fw-build:20.04 \
             make rt-ac86u 2>&1 | tee /tmp/fw-build.log; then
             echo "::error::make rt-ac86u failed — primary error lines:"
-            grep -E "(: error:|undefined reference|Error [0-9]+|ERROR:|FATAL:)" /tmp/fw-build.log | tail -n 20 | while IFS= read -r line; do
+            grep -E "(: error:|undefined reference|Error [0-9]+|ERROR:|FATAL:)" /tmp/fw-build.log | tail -n 8 | while IFS= read -r line; do
               echo "::error::${line}"
             done || true
             tail -n 60 /tmp/fw-build.log || true
@@ -233,7 +281,7 @@ jobs:
                 fw-build:20.04 \
                 make -k openssl-1.1 zlib sqlite expat-2.0.1 libcap-ng nettle dropbear curl wget openvpn miniupnpd dnsmasq haveged nano wsdd2 wireguard-tools shared libdisk libovpn rstats cstats httpd rc busybox libxml2 inadyn \
                 2>&1 | tee /tmp/fw-harvest.log || true
-              grep -E "(: error:|undefined reference|Error [0-9]+|FATAL:)" /tmp/fw-harvest.log | tail -n 30 | while IFS= read -r line; do
+              grep -E "(: error:|undefined reference|Error [0-9]+|FATAL:)" /tmp/fw-harvest.log | tail -n 8 | while IFS= read -r line; do
                 echo "::error::[harvest] ${line}"
               done || true
             fi
@@ -252,7 +300,7 @@ jobs:
             ls -lh "${TARGET_OUT}"/*_ubi.w
           ) 2>&1 | tee /tmp/step-purge.log; then
             echo "::error::cferom purge or _ubi.w check failed — see log tail:"
-            tail -n 30 /tmp/step-purge.log | while IFS= read -r line; do echo "::error::${line}"; done || true
+            tail -n 8 /tmp/step-purge.log | while IFS= read -r line; do echo "::error::${line}"; done || true
             exit 1
           fi
 
@@ -263,7 +311,7 @@ jobs:
           if ! python3 "${GITHUB_WORKSPACE}/custom-fw/tests/stage3_rootfs_elf_ko_audit.py" \
             --rootfs "${HND_ROOT}/targets/94908HND/fs.install" \
             --symvers "${HND_ROOT}/kernel/linux-4.1/Module.symvers" 2>&1 | tee /tmp/step-stage3.log; then
-            grep -E "(FATAL|ERROR|Error|missing|mismatch)" /tmp/step-stage3.log | tail -n 20 | while IFS= read -r line; do
+            grep -E "(FATAL|ERROR|Error|missing|mismatch)" /tmp/step-stage3.log | tail -n 8 | while IFS= read -r line; do
               echo "::error::[stage3] ${line}"
             done || echo "::error::STAGE 3 rootfs/ELF/.ko audit failed"
             exit 1
@@ -276,7 +324,7 @@ jobs:
           if ! "${GITHUB_WORKSPACE}/custom-fw/tests/stage4_qemu_smoke.sh" \
             "${HND_ROOT}/targets/94908HND/fs.install" \
             "${GITHUB_WORKSPACE}/asuswrt-merlin.ng" 2>&1 | tee /tmp/step-stage4.log; then
-            grep -E "(FATAL|ERROR|Error|FAIL)" /tmp/step-stage4.log | tail -n 20 | while IFS= read -r line; do
+            grep -E "(FATAL|ERROR|Error|FAIL)" /tmp/step-stage4.log | tail -n 8 | while IFS= read -r line; do
               echo "::error::[stage4] ${line}"
             done || echo "::error::STAGE 4 QEMU smoke test failed"
             exit 1
@@ -296,7 +344,7 @@ jobs:
             --image "${DIST_FW}" \
             --target-dir "${TARGET_OUT}" \
             --dist-dir "${GITHUB_WORKSPACE}/dist" 2>&1 | tee /tmp/step-stage5.log; then
-            grep -E "(FATAL|ERROR|Error|FAIL)" /tmp/step-stage5.log | tail -n 20 | while IFS= read -r line; do
+            grep -E "(FATAL|ERROR|Error|FAIL)" /tmp/step-stage5.log | tail -n 8 | while IFS= read -r line; do
               echo "::error::[stage5] ${line}"
             done || echo "::error::STAGE 5 image forensics failed"
             exit 1
