@@ -136,38 +136,39 @@ jobs:
       - name: Build Asuswrt-Merlin fw-build:20.04 container & prepare HND GCC 5.3 toolchains + ccache
         run: |
           set -o pipefail
-          git clone --depth 1 https://github.com/Asuswrt-Merlin/am-buildtools.git "${GITHUB_WORKSPACE}/am-buildtools"
-          docker build --build-arg UBUNTU_VERSION=20.04 -t fw-build:20.04 "${GITHUB_WORKSPACE}/am-buildtools/docker"
-          docker build -t fw-build:20.04 - <<'DOCKEREOF'
+          if ! (
+            git clone --depth 1 https://github.com/Asuswrt-Merlin/am-buildtools.git "${GITHUB_WORKSPACE}/am-buildtools"
+            docker build --build-arg UBUNTU_VERSION=20.04 -t fw-build:20.04 "${GITHUB_WORKSPACE}/am-buildtools/docker"
+            docker build -t fw-build:20.04 - <<'DOCKEREOF'
           FROM fw-build:20.04
           RUN apt-get update && apt-get install -y --no-install-recommends ccache && rm -rf /var/lib/apt/lists/*
           DOCKEREOF
 
-          if [[ "${{ steps.cache-toolchains.outputs.cache-hit }}" != "true" || ! -e /tmp/am-toolchains/brcm-arm-hnd/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/usr/bin/arm-buildroot-linux-gnueabi-gcc ]]; then
-            rm -rf /tmp/am-toolchains
-            mkdir -p /tmp/am-toolchains
-            cd /tmp/am-toolchains
-            git init
-            git remote add origin https://github.com/Asuswrt-Merlin/am-toolchains.git
-            git config core.sparseCheckout true
-            cat <<'EOF' > .git/info/sparse-checkout
+            if [[ "${{ steps.cache-toolchains.outputs.cache-hit }}" != "true" || ! -e /tmp/am-toolchains/brcm-arm-hnd/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/usr/bin/arm-buildroot-linux-gnueabi-gcc ]]; then
+              rm -rf /tmp/am-toolchains
+              mkdir -p /tmp/am-toolchains
+              cd /tmp/am-toolchains
+              git init
+              git remote add origin https://github.com/Asuswrt-Merlin/am-toolchains.git
+              git config core.sparseCheckout true
+              cat <<'EOF' > .git/info/sparse-checkout
           brcm-arm-hnd/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/
           brcm-arm-hnd/crosstools-aarch64-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/
           EOF
-            git fetch --depth 1 origin "${TOOLCHAIN_COMMIT}"
-            git checkout FETCH_HEAD
-          fi
+              git fetch --depth 1 origin "${TOOLCHAIN_COMMIT}"
+              git checkout FETCH_HEAD
+            fi
 
-          # Idempotently wrap Buildroot real compiler ELF binaries so absolute /opt/toolchains/... invocations use ccache
-          for real_bin in /tmp/am-toolchains/brcm-arm-hnd/crosstools-*/usr/bin/*.br_real; do
-            case "${real_bin}" in
-              *-gcc.br_real|*-gcc-[0-9]*.br_real|*-g++.br_real|*-c++.br_real) ;;
-              *) continue ;;
-            esac
-            [[ -f "${real_bin}" && ! -L "${real_bin}" ]] || continue
-            if [[ ! -e "${real_bin}.orig" ]]; then
-              mv "${real_bin}" "${real_bin}.orig"
-              cat <<'WRAPEOF' > "${real_bin}"
+            # Idempotently wrap Buildroot real compiler ELF binaries so absolute /opt/toolchains/... invocations use ccache
+            for real_bin in /tmp/am-toolchains/brcm-arm-hnd/crosstools-*/usr/bin/*.br_real; do
+              case "${real_bin}" in
+                *-gcc.br_real|*-gcc-[0-9]*.br_real|*-g++.br_real|*-c++.br_real) ;;
+                *) continue ;;
+              esac
+              [[ -f "${real_bin}" && ! -L "${real_bin}" ]] || continue
+              if [[ ! -e "${real_bin}.orig" ]]; then
+                mv "${real_bin}" "${real_bin}.orig"
+                cat <<'WRAPEOF' > "${real_bin}"
           #!/bin/sh
           REAL="$(readlink -f "$0")"
           if [ -n "${CCACHE_DIR:-}" ] && [ -x /usr/bin/ccache ]; then
@@ -175,30 +176,34 @@ jobs:
           fi
           exec "${REAL}.orig" "$@"
           WRAPEOF
-              chmod 0755 "${real_bin}"
-            fi
-          done
+                chmod 0755 "${real_bin}"
+              fi
+            done
 
-          mkdir -p /tmp/ccache
-          docker run --rm \
-            -u "$(id -u):$(id -g)" \
-            -v /tmp/ccache:/workspace/ccache \
-            -e CCACHE_DIR=/workspace/ccache \
-            -e CCACHE_COMPILERCHECK=content \
-            -v "/tmp/am-toolchains/brcm-arm-hnd:/opt/toolchains:ro" \
-            fw-build:20.04 \
-            bash -ec '
-              arm-buildroot-linux-gnueabi-gcc --version
-              aarch64-buildroot-linux-gnu-gcc --version
-              ccache -z
-              printf "int f(int x){return x+1;}\n" > /tmp/ccache_smoke.c
-              arm-buildroot-linux-gnueabi-gcc -c /tmp/ccache_smoke.c -o /tmp/t32.o
-              arm-buildroot-linux-gnueabi-gcc -c /tmp/ccache_smoke.c -o /tmp/t32.o
-              aarch64-buildroot-linux-gnu-gcc -c /tmp/ccache_smoke.c -o /tmp/t64.o
-              aarch64-buildroot-linux-gnu-gcc -c /tmp/ccache_smoke.c -o /tmp/t64.o
-              ccache -s
-              rm -f /tmp/ccache_smoke.c /tmp/t32.o /tmp/t64.o
-            '
+            mkdir -p /tmp/ccache
+            docker run --rm \
+              -u "$(id -u):$(id -g)" \
+              -v /tmp/ccache:/workspace/ccache \
+              -e CCACHE_DIR=/workspace/ccache \
+              -e CCACHE_COMPILERCHECK=content \
+              -v "/tmp/am-toolchains/brcm-arm-hnd:/opt/toolchains:ro" \
+              fw-build:20.04 \
+              bash -ec '
+                arm-buildroot-linux-gnueabi-gcc --version
+                aarch64-buildroot-linux-gnu-gcc --version
+                ccache -z
+                printf "int f(int x){return x+1;}\n" > /tmp/ccache_smoke.c
+                arm-buildroot-linux-gnueabi-gcc -c /tmp/ccache_smoke.c -o /tmp/t32.o
+                arm-buildroot-linux-gnueabi-gcc -c /tmp/ccache_smoke.c -o /tmp/t32.o
+                aarch64-buildroot-linux-gnu-gcc -c /tmp/ccache_smoke.c -o /tmp/t64.o
+                aarch64-buildroot-linux-gnu-gcc -c /tmp/ccache_smoke.c -o /tmp/t64.o
+                ccache -s
+                rm -f /tmp/ccache_smoke.c /tmp/t32.o /tmp/t64.o
+              '
+          ) 2>&1 | tee /tmp/step-prep.log; then
+            tail -n 8 /tmp/step-prep.log | while IFS= read -r line; do echo "::error::[prep] ${line}"; done || true
+            exit 1
+          fi
 
       - name: "STAGE 1 (Pre-Build): Patch, Struct ABI & Closed-Source .o Blob Contract Gate"
         env:
