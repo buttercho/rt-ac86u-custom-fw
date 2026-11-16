@@ -56,20 +56,20 @@ ENABLE_RTCONFIG = {
 }
 
 MANDATORY_SOURCES = [
-    ("release/src/router/wsdd2/wsdd2.c", ["-std=gnu11", "-Wall", "-Wextra"], []),
-    ("release/src/router/wsdd2/wsd.c", ["-std=gnu11", "-Wall", "-Wextra"], []),
-    ("release/src/router/wsdd2/llmnr.c", ["-std=gnu11", "-Wall", "-Wextra"], []),
-    ("release/src/router/shared/pids.c", ["-std=gnu99", "-Wall"], []),
-    ("release/src/router/shared/shutils.c", ["-std=gnu99", "-Wall"], []),
+    ("release/src/router/wsdd2/wsdd2.c", ["-DASUSWRT", "-std=gnu99", "-Wall", "-Wextra"], ["release/src/router/wsdd2"]),
+    ("release/src/router/wsdd2/wsd.c", ["-DASUSWRT", "-std=gnu99", "-Wall", "-Wextra"], ["release/src/router/wsdd2"]),
+    ("release/src/router/wsdd2/llmnr.c", ["-DASUSWRT", "-std=gnu99", "-Wall", "-Wextra"], ["release/src/router/wsdd2"]),
+    ("release/src/router/shared/pids.c", ["-Wall"], []),
+    ("release/src/router/shared/shutils.c", ["-Wall"], []),
 ]
 
 EXTENDED_SOURCES = [
-    ("release/src/router/shared/defaults.c", ["-std=gnu99", "-Wall"], []),
-    ("release/src/router/shared/misc.c", ["-std=gnu99", "-Wall"], []),
-    ("release/src/router/rstats/rstats.c", ["-std=gnu99", "-Wall"], ["release/src/router/rstats"]),
-    ("release/src/router/cstats/cstats.c", ["-std=gnu99", "-Wall"], ["release/src/router/cstats"]),
-    ("release/src/router/libdisk/usb_info.c", ["-std=gnu99", "-Wall"], ["release/src/router/libdisk"]),
-    ("release/src/router/libdisk/write_smb_conf.c", ["-std=gnu99", "-Wall"], ["release/src/router/libdisk"]),
+    ("release/src/router/shared/defaults.c", ["-Wall"], []),
+    ("release/src/router/shared/misc.c", ["-Wall"], []),
+    ("release/src/router/rstats/rstats.c", ["-Wall"], ["release/src/router/rstats"]),
+    ("release/src/router/cstats/cstats.c", ["-Wall"], ["release/src/router/cstats"]),
+    ("release/src/router/libdisk/usb_info.c", ["-Wall"], ["release/src/router/libdisk"]),
+    ("release/src/router/libdisk/write_smb_conf.c", ["-Wall"], ["release/src/router/libdisk"]),
 ]
 
 
@@ -136,9 +136,11 @@ def run_syntax_check(
     inc_candidates = [
         inc_dir,
         os.path.join(merlin_dir, "release/src/router/shared"),
+        os.path.join(merlin_dir, "release/src/router/kernel_header/include"),
         os.path.join(merlin_dir, "release/src/router/libdisk"),
         os.path.join(merlin_dir, "release/src-rt-5.02hnd/bcmdrivers/broadcom/net/wl/impl51/main/src/include"),
         os.path.join(merlin_dir, "release/src-rt-5.02hnd/bcmdrivers/broadcom/net/wl/impl51/main/src/common/include"),
+        os.path.join(merlin_dir, "release/src-rt-5.02hnd/bcmdrivers/broadcom/net/wl/impl51/main/src/shared"),
         os.path.join(merlin_dir, "release/src-rt-5.02hnd/bcmdrivers/broadcom/net/wl/impl51/main/src/shared/bcmwifi/include"),
         os.path.join(merlin_dir, "release/src-rt-5.02hnd/bcmdrivers/opensource/include/bcm963xx"),
         os.path.join(merlin_dir, "release/src-rt-5.02hnd/shared/opensource/include/bcm963xx"),
@@ -147,6 +149,10 @@ def run_syntax_check(
         *(os.path.join(merlin_dir, d) for d in rel_inc_dirs),
     ]
     inc_flags = [f"-I{d}" for d in inc_candidates if os.path.isdir(d)]
+
+    with open(src_path, "r", encoding="utf-8", errors="replace") as fh:
+        head_lines = "".join(fh.readline() for _ in range(40))
+    gnu_flag = [] if "_GNU_SOURCE" in head_lines else ["-D_GNU_SOURCE"]
 
     cmd = [
         cc,
@@ -163,8 +169,9 @@ def run_syntax_check(
         "-DBCMWPA2",
         "-DBCMQOS",
         "-DTYPEDEF_FLOAT_T",
+        "-D__EXPORTED_HEADERS__",
         "-DRTCONFIG_ISP_METER",
-        "-D_GNU_SOURCE",
+        *gnu_flag,
         *extra_cflags,
         *inc_flags,
         src_path,
