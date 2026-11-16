@@ -299,7 +299,9 @@ jobs:
           if ! python3 "${GITHUB_WORKSPACE}/custom-fw/tests/stage3_rootfs_elf_ko_audit.py" \
             --rootfs "${FINAL_ROOTFS}" \
             --symvers "${HND_ROOT}/kernel/linux-4.1/Module.symvers" 2>&1 | tee /tmp/step-stage3.log; then
-            grep -E "(FATAL|ERROR|Error|missing|mismatch)" /tmp/step-stage3.log | tail -n 8 | while IFS= read -r line; do
+            grep -E "^  - |FATAL|ERROR|Error|missing|mismatch" /tmp/step-stage3.log | head -n 8 | while IFS= read -r line; do
+              echo "::error::[stage3] ${line}"
+            done || tail -n 8 /tmp/step-stage3.log | while IFS= read -r line; do
               echo "::error::[stage3] ${line}"
             done || echo "::error::STAGE 3 rootfs/ELF/.ko audit failed"
             exit 1
@@ -316,7 +318,9 @@ jobs:
           if ! "${GITHUB_WORKSPACE}/custom-fw/tests/stage4_qemu_smoke.sh" \
             "${FINAL_ROOTFS}" \
             "${GITHUB_WORKSPACE}/asuswrt-merlin.ng" 2>&1 | tee /tmp/step-stage4.log; then
-            grep -E "(FATAL|ERROR|Error|FAIL)" /tmp/step-stage4.log | tail -n 8 | while IFS= read -r line; do
+            grep -E "^  - |FATAL|ERROR|Error|FAIL" /tmp/step-stage4.log | head -n 8 | while IFS= read -r line; do
+              echo "::error::[stage4] ${line}"
+            done || tail -n 8 /tmp/step-stage4.log | while IFS= read -r line; do
               echo "::error::[stage4] ${line}"
             done || echo "::error::STAGE 4 QEMU smoke test failed"
             exit 1
@@ -336,7 +340,9 @@ jobs:
             --image "${DIST_FW}" \
             --target-dir "${TARGET_OUT}" \
             --dist-dir "${GITHUB_WORKSPACE}/dist" 2>&1 | tee /tmp/step-stage5.log; then
-            grep -E "(FATAL|ERROR|Error|FAIL)" /tmp/step-stage5.log | tail -n 8 | while IFS= read -r line; do
+            grep -E "^  - |FATAL|ERROR|Error|FAIL" /tmp/step-stage5.log | head -n 8 | while IFS= read -r line; do
+              echo "::error::[stage5] ${line}"
+            done || tail -n 8 /tmp/step-stage5.log | while IFS= read -r line; do
               echo "::error::[stage5] ${line}"
             done || echo "::error::STAGE 5 image forensics failed"
             exit 1
