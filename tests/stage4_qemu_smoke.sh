@@ -31,12 +31,30 @@ fi
 LD_PATHS="${ROOTFS}/lib:${ROOTFS}/usr/lib:${ROOTFS}/lib/public:${ROOTFS}/lib/private"
 LD_PATHS_64="${ROOTFS}/lib/aarch64:${ROOTFS}/usr/lib/aarch64:${ROOTFS}/usr/lib:${ROOTFS}/usr/lib/ebtables:${ROOTFS}/lib"
 
+QEMU_ARM_CPU_ARGS=()
+ARM_CPUS="$("${QEMU_ARM}" -cpu help 2>/dev/null || true)"
+for cand in cortex-a53 cortex-a15 cortex-a7 max any; do
+    if echo "${ARM_CPUS}" | grep -qw "${cand}"; then
+        QEMU_ARM_CPU_ARGS=(-cpu "${cand}")
+        break
+    fi
+done
+
+QEMU_AARCH64_CPU_ARGS=()
+AARCH64_CPUS="$("${QEMU_AARCH64}" -cpu help 2>/dev/null || true)"
+for cand in cortex-a53 max any; do
+    if echo "${AARCH64_CPUS}" | grep -qw "${cand}"; then
+        QEMU_AARCH64_CPU_ARGS=(-cpu "${cand}")
+        break
+    fi
+done
+
 run_arm32() {
-    "${QEMU_ARM}" -cpu cortex-a53 -L "${ROOTFS}" -E "LD_LIBRARY_PATH=${LD_PATHS}" "$@"
+    "${QEMU_ARM}" "${QEMU_ARM_CPU_ARGS[@]}" -L "${ROOTFS}" -E "LD_LIBRARY_PATH=${LD_PATHS}" "$@"
 }
 
 run_aarch64() {
-    "${QEMU_AARCH64}" -cpu cortex-a53 -L "${ROOTFS}" -E "LD_LIBRARY_PATH=${LD_PATHS_64}" "$@"
+    "${QEMU_AARCH64}" "${QEMU_AARCH64_CPU_ARGS[@]}" -L "${ROOTFS}" -E "LD_LIBRARY_PATH=${LD_PATHS_64}" "$@"
 }
 
 TMP_WORK="$(mktemp -d -t stage4_qemu_XXXXXX)"
