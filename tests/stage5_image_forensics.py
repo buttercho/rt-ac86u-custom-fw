@@ -6,9 +6,8 @@ Performs fail-closed binary forensics on the compiled `RT-AC86U_*_ubi.w` image:
      directories (preventing accidental MTD0 bootloader overwrite!).
   2. Verifies the image starts with valid UBI Erase-Block Header magic (`UBI#` =
      `0x55 0x42 0x49 0x23`) and enforces UBI PEB stride integrity across eraseblocks.
-  3. Enforces strict UBI image geometry: `34 MB <= size <= 54 MB` (guaranteeing
-     `>= 10 MB` of free UBI wear-leveling/PEB margin inside the `64 MB` `LINUX_MTD`
-     NAND partition!).
+  3. Enforces strict UBI image geometry: `22 MB <= size <= 88 MB` (safe wear-leveling
+     margin inside the RT-AC86U's `256 MB` NAND `~92 MB` `linux` UBI partition).
   4. Inspects the Broadcom `WFI_TAG` + ASUS `addvtoken` trailer at the end of `_ubi.w`
      to verify `RT-AC86U` model metadata and `0x4908` (`BCM4906`/`BCM4908` family)
      chip identifier presence.
@@ -31,7 +30,7 @@ UBI_EC_HDR_PREFIX = b"UBI#\x01\x00\x00\x00"
 JFFS2_MAGIC_LE = b"\x85\x19"
 JFFS2_MAGIC_BE = b"\x19\x85"
 MIN_IMAGE_BYTES = 22 * 1024 * 1024  # 22 MiB (accounts for stripped AI/printer/DLNA suites)
-MAX_IMAGE_BYTES = 54 * 1024 * 1024  # 54 MiB (leaves >=10 MiB UBI wear-leveling margin in 64 MiB MTD!)
+MAX_IMAGE_BYTES = 88 * 1024 * 1024  # 88 MiB (safe margin inside RT-AC86U 256MB NAND ~92 MiB linux MTD)
 NAND_PEB_SIZE = 128 * 1024          # 128 KiB physical eraseblock on RT-AC86U 256MB SLC NAND
 
 
@@ -84,7 +83,7 @@ def inspect_ubi_w_image(
     info["filename"] = os.path.basename(image_path)
     info["size_bytes"] = size
     info["size_mib"] = round(size / (1024 * 1024), 2)
-    info["free_mtd_margin_mib"] = round((64 * 1024 * 1024 - size) / (1024 * 1024), 2)
+    info["free_mtd_margin_mib"] = round((92 * 1024 * 1024 - size) / (1024 * 1024), 2)
 
     if not (min_bytes <= size <= max_bytes):
         errors.append(
