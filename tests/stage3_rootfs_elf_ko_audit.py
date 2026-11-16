@@ -64,6 +64,25 @@ ALLOWED_AARCH64_PATTERNS = [
     "*/libebt*.so*",
     "*/ld-linux-aarch64.so*",
     "*/aarch64/*",
+    "*/xtables*",
+    "*/libxt*.so*",
+    "*/ip",
+    "*/tc",
+    "*/mcpd",
+    "*/fcctl",
+    "*/fc",
+    "*/runner*",
+    "*/archer*",
+    "*/spuctl",
+    "*/bpmctl",
+    "*/pwr*",
+    "*/ethctl",
+    "*/ethswctl",
+    "*/tmctl",
+    "*/vlanctl",
+    "*/rdpactl",
+    "*/blogctl",
+    "*/bs",
 ]
 
 RUNTIME_INTRINSIC_UND = {
@@ -72,6 +91,15 @@ RUNTIME_INTRINSIC_UND = {
     "_ITM_deregisterTMCloneTable",
     "_ITM_registerTMCloneTable",
     "__cxa_finalize",
+    "__tls_get_addr",
+    "___tls_get_addr",
+    "_rtld_global",
+    "_rtld_global_ro",
+    "__libc_enable_secure",
+    "__libc_stack_end",
+    "_dl_argv",
+    "_dl_find_dso_for_object",
+    "__tunable_get_val",
 }
 
 
@@ -110,11 +138,61 @@ def parse_elf_header(path: str) -> tuple[int, int, int, int] | None:
     return elf_class, e_type, e_machine, e_flags
 
 
+def extract_elf_pt_load_digest(path: str) -> str | None:
+    """Hash all PT_LOAD ELF segments (invariant across sstrip section-header removal)."""
+    try:
+        with open(path, "rb") as fh:
+            blob = bytearray(fh.read())
+    except OSError:
+        return None
+    if len(blob) < 52 or blob[:4] != ELF_MAGIC:
+        return None
+    elf_class = blob[4]
+    endian = "<" if blob[5] == 1 else ">"
+    if elf_class == ELFCLASS32:
+        e_phoff, _e_shoff, _e_flags, _e_ehsize, e_phentsize, e_phnum = struct.unpack_from(
+            f"{endian}IIIHHH", blob, 28
+        )
+        if e_phnum == 0 or e_phentsize < 32 or e_phoff + e_phnum * e_phentsize > len(blob):
+            return None
+        # Mask ELF32 section-header fields (e_shoff, e_shentsize, e_shnum, e_shstrndx) zeroed by sstrip
+        blob[32:36] = b"\x00" * 4
+        blob[46:52] = b"\x00" * 6
+        h = hashlib.sha256()
+        pt_loads = 0
+        for i in range(e_phnum):
+            off = e_phoff + i * e_phentsize
+            p_type, p_offset, _p_vaddr, _p_paddr, p_filesz = struct.unpack_from(f"{endian}IIIII", blob, off)
+            if p_type == 1 and p_offset + p_filesz <= len(blob):
+                pt_loads += 1
+                h.update(blob[p_offset : p_offset + p_filesz])
+        return h.hexdigest() if pt_loads > 0 else None
+    if elf_class == ELFCLASS64 and len(blob) >= 64:
+        e_phoff, _e_shoff, _e_flags, _e_ehsize, e_phentsize, e_phnum = struct.unpack_from(
+            f"{endian}QQIHHH", blob, 32
+        )
+        if e_phnum == 0 or e_phentsize < 56 or e_phoff + e_phnum * e_phentsize > len(blob):
+            return None
+        # Mask ELF64 section-header fields (e_shoff, e_shentsize, e_shnum, e_shstrndx) zeroed by sstrip
+        blob[40:48] = b"\x00" * 8
+        blob[58:64] = b"\x00" * 6
+        h = hashlib.sha256()
+        pt_loads = 0
+        for i in range(e_phnum):
+            off = e_phoff + i * e_phentsize
+            p_type, _p_flags, p_offset, _p_vaddr, _p_paddr, p_filesz = struct.unpack_from(f"{endian}IIQQQQ", blob, off)
+            if p_type == 1 and p_offset + p_filesz <= len(blob):
+                pt_loads += 1
+                h.update(blob[p_offset : p_offset + p_filesz])
+        return h.hexdigest() if pt_loads > 0 else None
+    return None
+
+
 def populate_dynamic_metadata(elfs: list[ElfInfo], readelf_bin: str) -> None:
     by_path = {e.full_path: e for e in elfs}
     for idx in range(0, len(elfs), 25):
         batch = [e.full_path for e in elfs[idx : idx + 25]]
-        out = subprocess.check_output([readelf_bin, "-d", "-Ws", *batch], text=True, errors="replace")
+        out = subprocess.check_output([readelf_bin, "-d", "-D", "-Ws", *batch], text=True, errors="replace")
         current: ElfInfo | None = None
         in_dynsym = False
         if len(batch) == 1:
@@ -128,8 +206,11 @@ def populate_dynamic_metadata(elfs: list[ElfInfo], readelf_bin: str) -> None:
                 continue
             if current is None:
                 continue
-            if line.startswith("Symbol table '"):
-                in_dynsym = "'.dynsym'" in line
+            if line.startswith(("Dynamic section", "Histogram")):
+                in_dynsym = False
+                continue
+            if line.startswith("Symbol table "):
+                in_dynsym = "'.symtab'" not in line
                 continue
             if "(NEEDED)" in line and "[" in line:
                 m = re.search(r"\[([^\]]+)\]", line)
@@ -144,7 +225,8 @@ def populate_dynamic_metadata(elfs: list[ElfInfo], readelf_bin: str) -> None:
                 if m:
                     current.rpaths.extend(p for p in m.group(1).split(":") if p)
             elif in_dynsym:
-                parts = line.split()
+                clean_line = re.sub(r"\[[^\]]*\]", "", line)
+                parts = clean_line.split()
                 if len(parts) >= 8 and parts[0].endswith(":"):
                     sym_type = parts[3]
                     bind = parts[4]
@@ -154,14 +236,19 @@ def populate_dynamic_metadata(elfs: list[ElfInfo], readelf_bin: str) -> None:
                     if not base_name:
                         continue
                     if ndx == "UND":
-                        if bind == "GLOBAL" and sym_type in ("FUNC", "OBJECT", "NOTYPE") and base_name not in RUNTIME_INTRINSIC_UND:
+                        if (
+                            bind == "GLOBAL"
+                            and sym_type in ("FUNC", "OBJECT", "NOTYPE")
+                            and base_name not in RUNTIME_INTRINSIC_UND
+                            and not base_name.startswith("_dl_")
+                        ):
                             current.und_syms.add(base_name)
                     elif bind in ("GLOBAL", "WEAK"):
                         current.defined_syms.add(base_name)
 
 
-def parse_elf64_ko_sections(path: str) -> tuple[bytes, bytes, dict[str, int]]:
-    """Extract .modinfo, __versions, and exported __crc_* symbols from an AArch64 .ko."""
+def parse_elf64_ko_sections(path: str) -> tuple[bytes, bytes, dict[str, int], dict[int, tuple[str, int]]]:
+    """Extract .modinfo, __versions, exported __crc_* symbols, and .rela__versions entries."""
     with open(path, "rb") as fh:
         blob = fh.read()
     if blob[:4] != ELF_MAGIC or blob[4] != ELFCLASS64:
@@ -188,6 +275,8 @@ def parse_elf64_ko_sections(path: str) -> tuple[bytes, bytes, dict[str, int]]:
     modinfo = b""
     versions = b""
     exported_crcs: dict[str, int] = {}
+    sym_names: list[str] = []
+    rela_versions_sec: tuple[int, int, int] | None = None
 
     for sh_name, sh_type, sh_offset, sh_size, sh_link, sh_entsize in sections:
         sname = sec_name(sh_name)
@@ -195,21 +284,35 @@ def parse_elf64_ko_sections(path: str) -> tuple[bytes, bytes, dict[str, int]]:
             modinfo = blob[sh_offset : sh_offset + sh_size]
         elif sname == "__versions":
             versions = blob[sh_offset : sh_offset + sh_size]
+        elif sh_type == 4 and sname == ".rela__versions" and sh_entsize == 24:  # SHT_RELA
+            rela_versions_sec = (sh_offset, sh_size, sh_entsize)
         elif sh_type == 2 and sh_entsize == 24:  # SHT_SYMTAB
             str_off, str_sz = sections[sh_link][2], sections[sh_link][3]
             strtab = blob[str_off : str_off + str_sz]
+            sym_names = []
             for pos in range(sh_offset, sh_offset + sh_size, 24):
                 st_name, st_info, _other, st_shndx, st_value, _st_size = struct.unpack_from(
                     f"{endian}IBBHQQ", blob, pos
                 )
-                if st_name == 0 or (st_info >> 4) == 0:  # skip LOCAL
+                if st_name == 0:
+                    sym_names.append("")
                     continue
                 end = strtab.find(b"\x00", st_name)
                 sym = strtab[st_name:end].decode("ascii", errors="replace")
-                if sym.startswith("__crc_") and st_shndx == 0xFFF1:  # SHN_ABS CRC symbol!
+                sym_names.append(sym)
+                if (st_info >> 4) != 0 and sym.startswith("__crc_") and st_shndx == 0xFFF1:  # SHN_ABS CRC symbol!
                     exported_crcs[sym[6:]] = st_value & 0xFFFFFFFF
 
-    return modinfo, versions, exported_crcs
+    reloc_offsets: dict[int, tuple[str, int]] = {}
+    if rela_versions_sec is not None and sym_names:
+        r_off, r_sz, r_entsize = rela_versions_sec
+        for pos in range(r_off, r_off + r_sz, r_entsize):
+            r_offset, r_info, r_addend = struct.unpack_from(f"{endian}QQq", blob, pos)
+            sym_idx = r_info >> 32
+            if sym_idx < len(sym_names) and sym_names[sym_idx]:
+                reloc_offsets[r_offset] = (sym_names[sym_idx], r_addend)
+
+    return modinfo, versions, exported_crcs, reloc_offsets
 
 
 def load_module_symvers(symvers_path: str) -> dict[str, int]:
@@ -322,22 +425,42 @@ def audit_rootfs(
                 if ld_key[0] == e.elf_class and ld_key[1].startswith("ld-"):
                     for ld_e in ld_list:
                         avail_syms |= ld_e.defined_syms
+            # Closed-source TrendMicro /usr/bwdpi binaries may resolve symbols across peer /usr/bwdpi plugins
+            if e.rel_path.startswith("/usr/bwdpi/") or "/bwdpi/" in e.rel_path:
+                for peer in dyn_elfs:
+                    if peer.elf_class == e.elf_class and "/bwdpi/" in peer.rel_path:
+                        avail_syms |= peer.defined_syms
             missing = sorted(e.und_syms - avail_syms)
             if missing:
                 errors.append(
                     f"{e.rel_path}: {len(missing)} unresolved dynamic symbol(s): {missing[:10]}"
                 )
 
-    # 3. Verify /lib/public/libexpat.so matches /usr/lib/libexpat.so.1 when both exist
-    pub_expat = os.path.join(rootfs_dir, "lib/public/libexpat.so")
+    # 3. Verify /lib/public/libexpat.so and /lib/libexpat.so match /usr/lib/libexpat.so.1 (sstrip-tolerant via PT_LOAD)
     usr_expat = os.path.join(rootfs_dir, "usr/lib/libexpat.so.1")
-    if os.path.exists(pub_expat) and os.path.exists(usr_expat):
-        h_pub = hashlib.sha256(open(os.path.realpath(pub_expat), "rb").read()).hexdigest()
-        h_usr = hashlib.sha256(open(os.path.realpath(usr_expat), "rb").read()).hexdigest()
-        if h_pub != h_usr:
-            errors.append(
-                f"/lib/public/libexpat.so ({h_pub[:12]}) does NOT match /usr/lib/libexpat.so.1 ({h_usr[:12]})!"
-            )
+    if os.path.exists(usr_expat):
+        usr_real = os.path.realpath(usr_expat)
+        usr_bytes = open(usr_real, "rb").read()
+        h_usr = hashlib.sha256(usr_bytes).hexdigest()
+        pt_usr = extract_elf_pt_load_digest(usr_real)
+        for cand_rel in ("lib/public/libexpat.so", "lib/libexpat.so"):
+            cand_expat = os.path.join(rootfs_dir, cand_rel)
+            if not os.path.exists(cand_expat):
+                continue
+            cand_real = os.path.realpath(cand_expat)
+            cand_bytes = open(cand_real, "rb").read()
+            h_cand = hashlib.sha256(cand_bytes).hexdigest()
+            pt_cand = extract_elf_pt_load_digest(cand_real)
+            exact_match = h_cand == h_usr
+            pt_match = pt_cand is not None and pt_usr is not None and pt_cand == pt_usr
+            if not (exact_match or pt_match):
+                errors.append(
+                    f"/{cand_rel} ({h_cand[:12]}) does NOT match /usr/lib/libexpat.so.1 ({h_usr[:12]})!"
+                )
+            elif (b"expat_2." in usr_bytes or b"expat_2." in cand_bytes) and (
+                b"expat_2.0." in cand_bytes or b"expat_2.1." in cand_bytes
+            ):
+                errors.append(f"/{cand_rel} still carries stale expat 2.0/2.1 version signature!")
 
     # 4. Kernel .ko vermagic & symbol CRC audit
     sym_crcs: dict[str, int] = {}
@@ -348,14 +471,17 @@ def audit_rootfs(
     for kp in sorted(ko_paths):
         rel = "/" + os.path.relpath(kp, rootfs_dir).replace(os.sep, "/")
         try:
-            modinfo, versions, exported = parse_elf64_ko_sections(kp)
+            modinfo, versions, exported, reloc_offsets = parse_elf64_ko_sections(kp)
         except Exception as exc:
             errors.append(f"{rel}: failed to parse ELF64 .ko: {exc}")
             continue
         sym_crcs.update(exported)
-        ko_parsed.append((rel, modinfo, versions))
+        ko_parsed.append((rel, modinfo, versions, reloc_offsets))
 
-    for rel, modinfo, versions in ko_parsed:
+    if symvers_path and os.path.isfile(symvers_path) and len(ko_parsed) == 0:
+        errors.append("No kernel .ko modules found in rootfs when --symvers was provided!")
+
+    for rel, modinfo, versions, reloc_offsets in ko_parsed:
         kv = {}
         for item in modinfo.split(b"\x00"):
             if b"=" in item:
@@ -371,6 +497,13 @@ def audit_rootfs(
                 sname = raw_name.split(b"\x00", 1)[0].decode("ascii", errors="replace")
                 if not sname:
                     continue
+                if crc == 0 and pos in reloc_offsets:
+                    rel_sym, rel_addend = reloc_offsets[pos]
+                    if rel_sym == f"__crc_{sname}":
+                        if rel_sym[6:] in sym_crcs:
+                            crc = (sym_crcs[rel_sym[6:]] + rel_addend) & 0xFFFFFFFF
+                        else:
+                            continue
                 if sname in sym_crcs and (crc & 0xFFFFFFFF) != (sym_crcs[sname] & 0xFFFFFFFF):
                     errors.append(
                         f"{rel}: symbol CRC mismatch for '{sname}': .ko=0x{crc & 0xFFFFFFFF:08x} "
@@ -384,27 +517,53 @@ def audit_rootfs(
     return errors
 
 
-def _build_synthetic_ko(path: str, vermagic: str, imported_crcs: list[tuple[int, str]]) -> None:
-    """Create a minimal valid ELF64 AArch64 ET_REL .ko with .modinfo and __versions for self-test."""
-    shstr = b"\x00.shstrtab\x00.modinfo\x00__versions\x00"
+def _build_synthetic_ko(
+    path: str, vermagic: str, imported_crcs: list[tuple[int, str]], use_rela_zero: bool = False
+) -> None:
+    """Create a minimal valid ELF64 AArch64 ET_REL .ko with .modinfo, __versions, and optional .rela__versions."""
+    shstr = b"\x00.shstrtab\x00.modinfo\x00__versions\x00.strtab\x00.symtab\x00.rela__versions\x00"
     modinfo = f"vermagic={vermagic}\x00license=Proprietary\x00".encode("ascii")
-    versions = b"".join(struct.pack("<Q56s", crc, name.encode("ascii")) for crc, name in imported_crcs)
+    versions = b"".join(
+        struct.pack("<Q56s", 0 if use_rela_zero else crc, name.encode("ascii"))
+        for crc, name in imported_crcs
+    )
+
+    strtab = bytearray(b"\x00")
+    symtab = bytearray(struct.pack("<IBBHQQ", 0, 0, 0, 0, 0, 0))  # STN_UNDEF
+    rela = bytearray()
+    if use_rela_zero:
+        for idx, (_crc, name) in enumerate(imported_crcs):
+            sym_name = f"__crc_{name}".encode("ascii") + b"\x00"
+            name_off = len(strtab)
+            strtab.extend(sym_name)
+            sym_idx = len(symtab) // 24
+            symtab.extend(struct.pack("<IBBHQQ", name_off, 0x10, 0, 0, 0, 0))  # STB_GLOBAL UND
+            rela.extend(struct.pack("<QQq", idx * 64, (sym_idx << 32) | 257, 0))
 
     hdr_sz = 64
-    off1 = hdr_sz
-    off2 = off1 + len(shstr)
-    off3 = off2 + len(modinfo)
-    sh_off = (off3 + len(versions) + 7) & ~7
-    pad = b"\x00" * (sh_off - (off3 + len(versions)))
+    off_shstr = hdr_sz
+    off_mod = off_shstr + len(shstr)
+    off_ver = off_mod + len(modinfo)
+    off_str = (off_ver + len(versions) + 7) & ~7
+    pad1 = b"\x00" * (off_str - (off_ver + len(versions)))
+    off_sym = (off_str + len(strtab) + 7) & ~7
+    pad2 = b"\x00" * (off_sym - (off_str + len(strtab)))
+    off_rela = (off_sym + len(symtab) + 7) & ~7
+    pad3 = b"\x00" * (off_rela - (off_sym + len(symtab)))
+    sh_off = (off_rela + len(rela) + 7) & ~7
+    pad4 = b"\x00" * (sh_off - (off_rela + len(rela)))
 
-    def shdr(name_off: int, sh_type: int, offset: int, size: int) -> bytes:
-        return struct.pack("<IIQQQQIIQQ", name_off, sh_type, 0, 0, offset, size, 0, 0, 1, 0)
+    def shdr(name_off: int, sh_type: int, offset: int, size: int, link: int = 0, entsize: int = 0) -> bytes:
+        return struct.pack("<IIQQQQIIQQ", name_off, sh_type, 0, 0, offset, size, link, 0, 8, entsize)
 
     shdrs = (
         shdr(0, 0, 0, 0)
-        + shdr(1, 3, off1, len(shstr))
-        + shdr(11, 1, off2, len(modinfo))
-        + shdr(20, 1, off3, len(versions))
+        + shdr(1, 3, off_shstr, len(shstr))
+        + shdr(11, 1, off_mod, len(modinfo))
+        + shdr(20, 1, off_ver, len(versions))
+        + shdr(31, 3, off_str, len(strtab))
+        + shdr(39, 2, off_sym, len(symtab), link=4, entsize=24)
+        + shdr(47, 4, off_rela, len(rela), link=5, entsize=24)
     )
     ehdr = struct.pack(
         "<4sBBBBB7xHHIQQQIHHHHHH",
@@ -425,15 +584,15 @@ def _build_synthetic_ko(path: str, vermagic: str, imported_crcs: list[tuple[int,
         0,
         0,
         64,
-        4,
+        7,
         1,
     )
     with open(path, "wb") as fh:
-        fh.write(ehdr + shstr + modinfo + versions + pad + shdrs)
+        fh.write(ehdr + shstr + modinfo + versions + pad1 + strtab + pad2 + symtab + pad3 + rela + pad4 + shdrs)
 
 
 def run_self_test() -> int:
-    print("[stage3:self-test] Synthesizing rootfs, .ko, and Module.symvers fixtures...")
+    print("[stage3:self-test] Synthesizing rootfs, .ko (.rela__versions), sstrip ELF & Module.symvers fixtures...")
     with tempfile.TemporaryDirectory(prefix="stage3_selftest_") as tmp:
         fs = os.path.join(tmp, "fs.install")
         os.makedirs(os.path.join(fs, "usr/lib"), exist_ok=True)
@@ -460,6 +619,16 @@ def run_self_test() -> int:
         errs = audit_rootfs(fs, symvers)
         assert not errs, f"Expected clean audit, got: {errs}"
 
+        # Positive case 2: AArch64 .rela__versions with crc==0 prior to relocation
+        _build_synthetic_ko(
+            ko_path,
+            "4.1.27 SMP preempt mod_unload aarch64 ",
+            [(0x1234ABCD, "blog_sinit")],
+            use_rela_zero=True,
+        )
+        errs_rela = audit_rootfs(fs, symvers)
+        assert not errs_rela, f"Expected clean .rela__versions audit, got: {errs_rela}"
+
         # Negative case 1: CRC mismatch on blog_sinit must fail!
         _build_synthetic_ko(
             ko_path,
@@ -483,7 +652,29 @@ def run_self_test() -> int:
         assert any("lighttpd" in e for e in errs_bloat), errs_bloat
         assert any("libexpat.so" in e for e in errs_bloat), errs_bloat
 
-    print("==> STAGE 3 SELF-TEST PASSED (positive + CRC-mismatch + bloat/libexpat negative cases).")
+        # sstrip-tolerance self-test: PT_LOAD digest & readelf -D -Ws on section-stripped shared library
+        gcc_bin = shutil.which("gcc")
+        readelf_bin = shutil.which("readelf")
+        if gcc_bin and readelf_bin:
+            c_so = os.path.join(tmp, "mock_expat.c")
+            orig_so = os.path.join(tmp, "libexpat_orig.so")
+            sstrip_so = os.path.join(tmp, "libexpat_sstrip.so")
+            with open(c_so, "w", encoding="utf-8") as fh:
+                fh.write("const char *XML_ExpatVersion(void) { return \"expat_2.10.0\"; }\n")
+            subprocess.run([gcc_bin, "-shared", "-fPIC", c_so, "-o", orig_so], check=True)
+            blob = bytearray(open(orig_so, "rb").read())
+            e_shoff = struct.unpack_from("<Q", blob, 40)[0]
+            struct.pack_into("<Q", blob, 40, 0)
+            struct.pack_into("<HHH", blob, 58, 0, 0, 0)
+            with open(sstrip_so, "wb") as fh:
+                fh.write(blob[:e_shoff] if e_shoff > 4096 else blob)
+            assert extract_elf_pt_load_digest(orig_so) is not None
+            assert extract_elf_pt_load_digest(orig_so) == extract_elf_pt_load_digest(sstrip_so)
+            elf_sstrip = ElfInfo("/lib/libexpat.so", sstrip_so, ELFCLASS64, ET_DYN, EM_AARCH64, 0)
+            populate_dynamic_metadata([elf_sstrip], readelf_bin)
+            assert "XML_ExpatVersion" in elf_sstrip.defined_syms, f"Missing sstrip sym: {elf_sstrip.defined_syms}"
+
+    print("==> STAGE 3 SELF-TEST PASSED (positive + .rela__versions + sstrip PT_LOAD/-D + CRC-mismatch + bloat/libexpat).")
     return 0
 
 

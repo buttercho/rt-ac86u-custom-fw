@@ -27,9 +27,35 @@ import sys
 import tempfile
 
 UBI_EC_MAGIC = b"UBI#"
-MIN_IMAGE_BYTES = 34 * 1024 * 1024  # 34 MiB
+UBI_EC_HDR_PREFIX = b"UBI#\x01\x00\x00\x00"
+JFFS2_MAGIC_LE = b"\x85\x19"
+JFFS2_MAGIC_BE = b"\x19\x85"
+MIN_IMAGE_BYTES = 22 * 1024 * 1024  # 22 MiB (accounts for stripped AI/printer/DLNA suites)
 MAX_IMAGE_BYTES = 54 * 1024 * 1024  # 54 MiB (leaves >=10 MiB UBI wear-leveling margin in 64 MiB MTD!)
 NAND_PEB_SIZE = 128 * 1024          # 128 KiB physical eraseblock on RT-AC86U 256MB SLC NAND
+
+
+def _find_first_bytes(fh, needle: bytes, max_scan_bytes: int | None = None) -> int:
+    """Stream-search file for needle, returning byte offset or -1."""
+    fh.seek(0)
+    overlap = len(needle) - 1
+    tail_buf = b""
+    offset = 0
+    while True:
+        chunk = fh.read(1024 * 1024)
+        if not chunk:
+            return -1
+        buf = tail_buf + chunk
+        pos = buf.find(needle)
+        if pos != -1:
+            found = offset - len(tail_buf) + pos
+            if max_scan_bytes is None or found < max_scan_bytes:
+                return found
+            return -1
+        offset += len(chunk)
+        if max_scan_bytes is not None and offset >= max_scan_bytes:
+            return -1
+        tail_buf = buf[-overlap:] if overlap > 0 else b""
 
 
 def inspect_ubi_w_image(
@@ -75,36 +101,51 @@ def inspect_ubi_w_image(
                 break
             sha256.update(chunk)
 
-        # Count valid UBI# eraseblock headers at 128 KiB PEB boundaries
+        # Locate start of UBI volume: offset 0 (pure-UBI) or after JFFS2 bootfs + BcmFsTag (bcmImageMaker --ubifs)
+        first_ubi_off = -1
+        if head[:4] == UBI_EC_MAGIC:
+            first_ubi_off = 0
+        elif head[:2] in (JFFS2_MAGIC_LE, JFFS2_MAGIC_BE):
+            first_ubi_off = _find_first_bytes(fh, UBI_EC_HDR_PREFIX)
+        else:
+            errors.append(
+                f"Missing UBI# or JFFS2 bootfs magic at offset 0 (got {head[:4]!r})"
+            )
+
+        # Count valid UBI# eraseblock headers at 128 KiB PEB boundaries from first_ubi_off
         peb_count = 0
-        for off in range(0, max(0, size - 4096), NAND_PEB_SIZE):
-            fh.seek(off)
-            if fh.read(4) == UBI_EC_MAGIC:
-                peb_count += 1
-            else:
-                break
+        if first_ubi_off >= 0:
+            for off in range(first_ubi_off, max(0, size - 4096), NAND_PEB_SIZE):
+                fh.seek(off)
+                if fh.read(4) == UBI_EC_MAGIC:
+                    peb_count += 1
+                else:
+                    break
+        elif head[:2] in (JFFS2_MAGIC_LE, JFFS2_MAGIC_BE):
+            errors.append("Found JFFS2 bootfs header at offset 0, but no UBI# EC payload followed!")
 
         tail_len = min(size, 8192)
         fh.seek(size - tail_len)
         tail = fh.read(tail_len)
+        has_model_tag = b"RT-AC86U" in tail
+        if not has_model_tag:
+            has_model_tag = _find_first_bytes(fh, b"RT-AC86U") >= 0
 
     info["sha256"] = sha256.hexdigest()
+    info["ubi_offset_bytes"] = first_ubi_off
     info["ubi_peb_count"] = peb_count
 
-    if head[:4] != UBI_EC_MAGIC:
-        errors.append(f"Missing UBI# eraseblock magic at offset 0 (got {head[:4]!r})")
     if peb_count < 10:
         errors.append(f"Unexpectedly low contiguous 128KiB UBI# PEB count: {peb_count}")
 
     # Check ASUS addvtoken / model string & Broadcom 0x4908 WFI_TAG chip ID in trailer
-    has_model_tag = (b"RT-AC86U" in tail)
     has_4908_le = struct.pack("<I", 0x4908) in tail
     has_4908_be = struct.pack(">I", 0x4908) in tail
     info["has_rt_ac86u_token"] = has_model_tag
     info["has_bcm4908_wfi_chipid"] = bool(has_4908_le or has_4908_be)
 
     if not has_model_tag:
-        errors.append("Missing ASUS 'RT-AC86U' addvtoken product identifier in image trailer!")
+        errors.append("Missing ASUS 'RT-AC86U' addvtoken product identifier in image!")
     if not (has_4908_le or has_4908_be):
         errors.append("Missing Broadcom 0x00004908 WFI_TAG chipId in image trailer!")
 
@@ -144,11 +185,11 @@ def write_reports(dist_dir: str, info: dict[str, object]) -> None:
 
 
 def run_self_test() -> int:
-    print("[stage5:self-test] Synthesizing _ubi.w + WFI_TAG + addvtoken fixtures...")
+    print("[stage5:self-test] Synthesizing pure-UBI and JFFS2-bootfs+BcmFsTag+UBI _ubi.w fixtures...")
     with tempfile.TemporaryDirectory(prefix="stage5_selftest_") as tmp:
         img = os.path.join(tmp, "RT-AC86U_386.14_2_ubi.w")
-        # Build 16 synthetic 128 KiB UBI# PEBs (2 MiB) + WFI_TAG(0x4908) + RT-AC86U addvtoken
-        peb = UBI_EC_MAGIC + (b"\x00" * (NAND_PEB_SIZE - 4))
+        # 1. Pure-UBI image: 16 synthetic 128 KiB UBI# PEBs (2 MiB) + WFI_TAG(0x4908) + RT-AC86U addvtoken
+        peb = UBI_EC_HDR_PREFIX + (b"\x00" * (NAND_PEB_SIZE - len(UBI_EC_HDR_PREFIX)))
         wfi_trailer = struct.pack("<IIIII", 0xCAFEBABE, 0x00005732, 0x00004908, 3, 0) + b"RT-AC86U\x00386.14_2\x00"
         with open(img, "wb") as fh:
             for _ in range(16):
@@ -156,11 +197,29 @@ def run_self_test() -> int:
             fh.write(wfi_trailer)
 
         info, errs = inspect_ubi_w_image(img, [tmp], min_bytes=1024 * 1024, max_bytes=10 * 1024 * 1024)
-        assert not errs, f"Expected clean Stage 5 inspection, got: {errs}"
+        assert not errs, f"Expected clean pure-UBI Stage 5 inspection, got: {errs}"
+        assert info["ubi_offset_bytes"] == 0
         assert info["ubi_peb_count"] == 16
         write_reports(tmp, info)
         assert os.path.isfile(os.path.join(tmp, "SHA256SUMS.txt"))
         assert os.path.isfile(os.path.join(tmp, "TEST_REPORT.md"))
+
+        # 2. Broadcom bcmImageMaker --ubifs layout: JFFS2 bootfs128kb + BcmFsTag + UBI# PEBs + payload RT-AC86U + tail WFI_TAG
+        img_bcm = os.path.join(tmp, "RT-AC86U_386.14_2_bcm_ubi.w")
+        bootfs = JFFS2_MAGIC_LE + b"\x03\x20\x00\x00\x00\x0c" + (b"RT-AC86U" + b"\xff" * (NAND_PEB_SIZE - 16))
+        bcm_fstag = b"BcmFsTag" + (b"\x00" * (NAND_PEB_SIZE - 8))
+        wfi_only_tail = struct.pack("<IIIII", 0xCAFEBABE, 0x00005732, 0x00004908, 3, 0)
+        with open(img_bcm, "wb") as fh:
+            fh.write(bootfs)
+            fh.write(bcm_fstag)
+            for _ in range(16):
+                fh.write(peb)
+            fh.write(wfi_only_tail)
+
+        info_bcm, errs_bcm = inspect_ubi_w_image(img_bcm, [tmp], min_bytes=1024 * 1024, max_bytes=10 * 1024 * 1024)
+        assert not errs_bcm, f"Expected clean bcmImageMaker Stage 5 inspection, got: {errs_bcm}"
+        assert info_bcm["ubi_offset_bytes"] == 2 * NAND_PEB_SIZE
+        assert info_bcm["ubi_peb_count"] == 16
 
         # Negative test: leftover cferom file MUST trigger fail-closed error!
         cferom = os.path.join(tmp, "RT-AC86U_386.14_2_cferom_ubi.w")
@@ -168,7 +227,7 @@ def run_self_test() -> int:
         _info2, errs2 = inspect_ubi_w_image(img, [tmp], min_bytes=1024 * 1024, max_bytes=10 * 1024 * 1024)
         assert any("cferom" in e for e in errs2), f"Expected cferom failure, got: {errs2}"
 
-    print("==> STAGE 5 SELF-TEST PASSED (valid _ubi.w + WFI/addvtoken + cferom trap).")
+    print("==> STAGE 5 SELF-TEST PASSED (pure-UBI + JFFS2/BcmFsTag/UBI + WFI/addvtoken + cferom trap).")
     return 0
 
 
