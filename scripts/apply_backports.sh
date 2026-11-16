@@ -572,8 +572,35 @@ with open(recordlen_path, "r", encoding="utf-8", errors="surrogateescape") as fh
     if "TEST_skip(" in fh.read():
         raise SystemExit("FATAL: remaining TEST_skip( call in openssl-1.1/test/recordlentest.c!")
 
+# 6. Dropbear 2026.94 svr-authpasswd.c calls 3004.388-only spwenc.o asus_openssl_crypt() absent in 386.14_2
+patch_exact(
+    "release/src/router/dropbear/src/svr-authpasswd.c",
+    """\tchar * password = NULL;
+\tchar crypt_buf[256] = {0};
+\tunsigned int passwordlen;""",
+    """\tchar * password = NULL;
+\tunsigned int passwordlen;""",
+    "dropbear svr-authpasswd remove unused crypt_buf"
+)
+patch_exact(
+    "release/src/router/dropbear/src/svr-authpasswd.c",
+    """\t\tpasswdcrypt = ses.authstate.pw_passwd;
+\t\ttestcrypt = crypt(password, passwdcrypt);
+\t\tif(testcrypt == NULL || *testcrypt == '\\0'){
+\t\t\tasus_openssl_crypt(password, passwdcrypt, crypt_buf, sizeof(crypt_buf));
+\t\t\ttestcrypt = crypt_buf;
+\t\t}""",
+    """\t\tpasswdcrypt = ses.authstate.pw_passwd;
+\t\ttestcrypt = crypt(password, passwdcrypt);""",
+    "dropbear svr-authpasswd remove 388-only asus_openssl_crypt"
+)
+db_passwd_path = os.path.join(merlin, "release/src/router/dropbear/src/svr-authpasswd.c")
+with open(db_passwd_path, "r", encoding="utf-8", errors="surrogateescape") as fh:
+    if "asus_openssl_crypt" in fh.read():
+        raise SystemExit("FATAL: remaining asus_openssl_crypt call in dropbear/src/svr-authpasswd.c!")
+
 if os.environ.get("APPLY_SET2", "1") == "1":
-    # 6. wsdd2 LLMNR OOM NULL-deref & realloc leak fix (Set 2 A-11)
+    # 7. wsdd2 LLMNR OOM NULL-deref & realloc leak fix (Set 2 A-11)
     patch_exact(
         "release/src/router/wsdd2/llmnr.c",
         """\t/* process all labels in question section */

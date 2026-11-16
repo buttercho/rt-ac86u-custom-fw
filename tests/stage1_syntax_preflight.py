@@ -324,6 +324,136 @@ def run_syntax_check(
     raise RuntimeError(f"Cross-compiler -fsyntax-only failed on {rel_src}:\n{summary}")
 
 
+def check_dropbear_authpasswd_syntax(cc: str, merlin_dir: str, inc_dir: str) -> bool:
+    """Syntax-check Dropbear svr-authpasswd.c with -Werror=implicit-function-declaration."""
+    db_dir = os.path.join(merlin_dir, "release/src/router/dropbear")
+    db_src = os.path.join(db_dir, "src/svr-authpasswd.c")
+    if not os.path.isfile(db_src):
+        return False
+
+    db_stub = os.path.join(inc_dir, "dropbear_stub_inc")
+    extra_inc: list[str] = []
+    if not os.path.isfile(os.path.join(db_dir, "src/config.h")) and not os.path.isfile(
+        os.path.join(db_dir, "config.h")
+    ):
+        os.makedirs(db_stub, exist_ok=True)
+        with open(os.path.join(db_stub, "config.h"), "w", encoding="utf-8") as fh:
+            fh.write(
+                "#define BUNDLED_LIBTOM 1\n"
+                "#define DISABLE_ZLIB 1\n"
+                "#define DISABLE_PAM 1\n"
+                "#define DISABLE_LASTLOG 1\n"
+                "#define DISABLE_UTMP 1\n"
+                "#define DISABLE_UTMPX 1\n"
+                "#define DISABLE_WTMP 1\n"
+                "#define DISABLE_WTMPX 1\n"
+                "#define DISABLE_PUTUTLINE 1\n"
+                "#define DISABLE_PUTUTXLINE 1\n"
+                "#define HAVE_BASENAME 1\n"
+                "#define HAVE_CLEARENV 1\n"
+                "#define HAVE_CLOCK_GETTIME 1\n"
+                "#define HAVE_CONST_GAI_STRERROR_PROTO 1\n"
+                "#define HAVE_CRYPT 1\n"
+                "#define HAVE_CRYPT_H 1\n"
+                "#define HAVE_DAEMON 1\n"
+                "#define HAVE_DECL_HTOLE64 1\n"
+                "#define HAVE_ENDIAN_H 1\n"
+                "#define HAVE_FORK 1\n"
+                "#define HAVE_FREEADDRINFO 1\n"
+                "#define HAVE_GAI_STRERROR 1\n"
+                "#define HAVE_GETADDRINFO 1\n"
+                "#define HAVE_GETGROUPLIST 1\n"
+                "#define HAVE_GETNAMEINFO 1\n"
+                "#define HAVE_GETPASS 1\n"
+                "#define HAVE_GETSPNAM 1\n"
+                "#define HAVE_GETUSERSHELL 1\n"
+                "#define HAVE_HTOLE64 1\n"
+                "#define HAVE_INTTYPES_H 1\n"
+                "#define HAVE_LIBGEN_H 1\n"
+                "#define HAVE_NETDB_H 1\n"
+                "#define HAVE_NETINET_IN_H 1\n"
+                "#define HAVE_NETINET_TCP_H 1\n"
+                "#define HAVE_PATHS_H 1\n"
+                "#define HAVE_PTY_H 1\n"
+                "#define HAVE_PUTENV 1\n"
+                "#define HAVE_SETRESGID 1\n"
+                "#define HAVE_SHADOW_H 1\n"
+                "#define HAVE_STDINT_H 1\n"
+                "#define HAVE_STDIO_H 1\n"
+                "#define HAVE_STDLIB_H 1\n"
+                "#define HAVE_STRINGS_H 1\n"
+                "#define HAVE_STRING_H 1\n"
+                "#define HAVE_SYS_PRCTL_H 1\n"
+                "#define HAVE_SYS_SELECT_H 1\n"
+                "#define HAVE_SYS_SOCKET_H 1\n"
+                "#define HAVE_SYS_STAT_H 1\n"
+                "#define HAVE_SYS_TYPES_H 1\n"
+                "#define HAVE_SYS_UIO_H 1\n"
+                "#define HAVE_SYS_WAIT_H 1\n"
+                "#define HAVE_UINT16_T 1\n"
+                "#define HAVE_UINT32_T 1\n"
+                "#define HAVE_UINT8_T 1\n"
+                "#define HAVE_UNDERSCORE_STATIC_ASSERT 1\n"
+                "#define HAVE_UNISTD_H 1\n"
+                "#define HAVE_U_INT16_T 1\n"
+                "#define HAVE_U_INT32_T 1\n"
+                "#define HAVE_U_INT8_T 1\n"
+                "#define HAVE_WRITEV 1\n"
+                "#define STDC_HEADERS 1\n"
+            )
+        def_opts_path = os.path.join(db_dir, "src/default_options.h")
+        if os.path.isfile(def_opts_path):
+            def_opts = open(def_opts_path, "r", encoding="utf-8", errors="replace").read()
+            guarded_lines = []
+            for line in def_opts.splitlines():
+                m = re.match(r"^( *#define\s+([^ \t]+)\s+.*)$", line)
+                if m and m.group(2) != "DROPBEAR_DEFAULT_OPTIONS_H_":
+                    guarded_lines.append(f"#ifndef {m.group(2)}\n{m.group(1)}\n#endif")
+                else:
+                    guarded_lines.append(line)
+            with open(os.path.join(db_stub, "default_options_guard.h"), "w", encoding="utf-8") as fh:
+                fh.write("\n".join(guarded_lines) + "\n")
+        extra_inc.append(f"-I{db_stub}")
+
+    local_opts_flag = ["-DLOCALOPTIONS_H_EXISTS"] if os.path.isfile(os.path.join(db_dir, "localoptions.h")) else []
+    inc_dirs = [
+        db_dir,
+        os.path.join(db_dir, "src"),
+        os.path.join(db_dir, "libtomcrypt/src/headers"),
+        os.path.join(db_dir, "libtommath"),
+        os.path.join(merlin_dir, "release/src/router/protect_srv/include"),
+        os.path.join(merlin_dir, "release/src/router/shared"),
+        inc_dir,
+    ]
+    inc_flags = [*extra_inc, *(f"-I{d}" for d in inc_dirs if os.path.isdir(d))]
+    cmd = [
+        cc,
+        "-fsyntax-only",
+        "-Werror=implicit-function-declaration",
+        "-mabi=aapcs-linux",
+        "-marm",
+        "-msoft-float",
+        "-ffixed-r8",
+        "-march=armv8-a+crc",
+        "-mtune=cortex-a53",
+        "-DARGTYPE=3",
+        "-DDROPBEAR_SERVER",
+        "-DDROPBEAR_CLIENT",
+        *local_opts_flag,
+        "-D_GNU_SOURCE",
+        "-DSECURITY_NOTIFY",
+        *inc_flags,
+        db_src,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        err_lines = [l for l in proc.stderr.splitlines() if ": error:" in l or ": fatal error:" in l]
+        summary = "\n".join(err_lines[:25]) if err_lines else proc.stderr[:2000]
+        raise RuntimeError(f"Cross-compiler -fsyntax-only failed on release/src/router/dropbear/src/svr-authpasswd.c:\n{summary}")
+    print("[stage1:syntax] PASS: release/src/router/dropbear/src/svr-authpasswd.c")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Stage 1 cross-compiler -fsyntax-only preflight.")
     parser.add_argument("--merlin-dir", required=True)
@@ -339,6 +469,8 @@ def main() -> int:
         for rel_src, flags, rel_incs in EXTENDED_SOURCES:
             if run_syntax_check(args.cc, args.merlin_dir, inc_dir, rel_src, flags, rel_incs, mandatory=False):
                 passed += 1
+        if check_dropbear_authpasswd_syntax(args.cc, args.merlin_dir, inc_dir):
+            passed += 1
     print(f"[stage1:syntax] Verified {passed} real patched translation units with {os.path.basename(args.cc)}.")
     return 0
 

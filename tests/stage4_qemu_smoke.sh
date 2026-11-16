@@ -29,7 +29,7 @@ if [[ -z "${QEMU_ARM}" || -z "${QEMU_AARCH64}" ]]; then
 fi
 
 LD_PATHS="${ROOTFS}/lib:${ROOTFS}/usr/lib:${ROOTFS}/lib/public:${ROOTFS}/lib/private"
-LD_PATHS_64="${ROOTFS}/lib/aarch64:${ROOTFS}/usr/lib/aarch64:${ROOTFS}/lib"
+LD_PATHS_64="${ROOTFS}/lib/aarch64:${ROOTFS}/usr/lib/aarch64:${ROOTFS}/usr/lib:${ROOTFS}/usr/lib/ebtables:${ROOTFS}/lib"
 
 run_arm32() {
     "${QEMU_ARM}" -cpu cortex-a53 -L "${ROOTFS}" -E "LD_LIBRARY_PATH=${LD_PATHS}" "$@"
@@ -48,9 +48,21 @@ OPENSSL_OUT="$(run_arm32 "${ROOTFS}/usr/sbin/openssl" version -a)"
 echo "${OPENSSL_OUT}"
 run_arm32 "${ROOTFS}/usr/sbin/openssl" speed -elapsed -seconds 1 aes-128-gcm sha256 >/dev/null
 
-CA_BUNDLE="${ROOTFS}/rom/certs/ca-bundle.crt"
-test -s "${CA_BUNDLE}" || { echo "FATAL: Missing ${CA_BUNDLE}" >&2; exit 1; }
-if grep -q "emSign ECC Root CA - G3" "${CA_BUNDLE}"; then
+CA_BUNDLE=""
+for cand in \
+    "${ROOTFS}/rom/etc/ssl/certs/ca-certificates.crt" \
+    "${ROOTFS}/etc/ssl/certs/ca-certificates.crt" \
+    "${ROOTFS}/rom/certs/ca-bundle.crt"
+do
+    if [[ -s "${cand}" ]] && grep -q "BEGIN CERTIFICATE" "${cand}"; then
+        CA_BUNDLE="${cand}"
+        break
+    fi
+done
+test -n "${CA_BUNDLE}" || { echo "FATAL: Missing non-empty installed CA certificate bundle in ${ROOTFS}" >&2; exit 1; }
+SRC_CA="${MERLIN_DIR}/release/src/router/rom/certs/ca-bundle.crt"
+test -s "${SRC_CA}" || { echo "FATAL: Missing ${SRC_CA}" >&2; exit 1; }
+if grep -q "emSign ECC Root CA - G3" "${SRC_CA}" || grep -q "emSign ECC Root CA - G3" "${CA_BUNDLE}"; then
     echo "FATAL: Distrusted emSign ECC Root CA - G3 present in built ca-bundle.crt!" >&2
     exit 1
 fi

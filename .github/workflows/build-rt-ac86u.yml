@@ -254,7 +254,7 @@ jobs:
             fw-build:20.04 \
             make rt-ac86u 2>&1 | tee /tmp/fw-build.log; then
             echo "::error::make rt-ac86u failed — primary error lines:"
-            grep -E "(: error:|undefined reference|Error [0-9]+|ERROR:|FATAL:)" /tmp/fw-build.log | tail -n 8 | while IFS= read -r line; do
+            grep -E "(: error:|undefined reference|collect2: error:|FATAL:)" /tmp/fw-build.log | grep -vE "^make(\[[0-9]+\])?: \*\*\*" | tail -n 8 | while IFS= read -r line; do
               echo "::error::${line}"
             done || true
             tail -n 60 /tmp/fw-build.log || true
@@ -270,6 +270,8 @@ jobs:
                 -e LC_ALL=C.UTF-8 \
                 -e LANG=C.UTF-8 \
                 -e FORCE_UNSAFE_CONFIGURE=1 \
+                -e PROFILE=94908HND \
+                -e BUILD_NAME=RT-AC86U \
                 -v /tmp/ccache:/workspace/ccache \
                 -e CCACHE_DIR=/workspace/ccache \
                 -e CCACHE_MAXSIZE=2G \
@@ -308,8 +310,12 @@ jobs:
         run: |
           set -o pipefail
           HND_ROOT="${GITHUB_WORKSPACE}/asuswrt-merlin.ng/release/src-rt-5.02hnd"
+          FINAL_ROOTFS="${HND_ROOT}/targets/94908HND/fs"
+          if [[ ! -d "${FINAL_ROOTFS}" ]]; then
+            FINAL_ROOTFS="${HND_ROOT}/targets/94908HND/fs.install"
+          fi
           if ! python3 "${GITHUB_WORKSPACE}/custom-fw/tests/stage3_rootfs_elf_ko_audit.py" \
-            --rootfs "${HND_ROOT}/targets/94908HND/fs.install" \
+            --rootfs "${FINAL_ROOTFS}" \
             --symvers "${HND_ROOT}/kernel/linux-4.1/Module.symvers" 2>&1 | tee /tmp/step-stage3.log; then
             grep -E "(FATAL|ERROR|Error|missing|mismatch)" /tmp/step-stage3.log | tail -n 8 | while IFS= read -r line; do
               echo "::error::[stage3] ${line}"
@@ -321,8 +327,12 @@ jobs:
         run: |
           set -o pipefail
           HND_ROOT="${GITHUB_WORKSPACE}/asuswrt-merlin.ng/release/src-rt-5.02hnd"
+          FINAL_ROOTFS="${HND_ROOT}/targets/94908HND/fs"
+          if [[ ! -d "${FINAL_ROOTFS}" ]]; then
+            FINAL_ROOTFS="${HND_ROOT}/targets/94908HND/fs.install"
+          fi
           if ! "${GITHUB_WORKSPACE}/custom-fw/tests/stage4_qemu_smoke.sh" \
-            "${HND_ROOT}/targets/94908HND/fs.install" \
+            "${FINAL_ROOTFS}" \
             "${GITHUB_WORKSPACE}/asuswrt-merlin.ng" 2>&1 | tee /tmp/step-stage4.log; then
             grep -E "(FATAL|ERROR|Error|FAIL)" /tmp/step-stage4.log | tail -n 8 | while IFS= read -r line; do
               echo "::error::[stage4] ${line}"

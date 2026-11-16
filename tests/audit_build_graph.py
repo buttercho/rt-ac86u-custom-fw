@@ -198,6 +198,29 @@ def audit_openssl_and_dropbear_rules(router_mk: str, merlin_dir: str, already_pa
     if "[ ! -f $(STAGEDIR)/usr/lib/libexpat.la ]" not in router_mk:
         raise RuntimeError("Expected guarded libexpat.la rewrite in expat-2.0.1 rule")
 
+    libcap_cfg = extract_make_rule_block(router_mk, "libcap-ng/configure:")
+    if "--without-python3" not in libcap_cfg:
+        raise RuntimeError("Missing '--without-python3' in libcap-ng/configure: rule")
+
+    reinstall_blk = extract_make_rule_block(router_mk, "reinstall:")
+    expat_inst_blk = extract_make_rule_block(router_mk, "expat-2.0.1-install:")
+    if "BCM_FSBUILD_DIR" not in reinstall_blk or "BCM_FSBUILD_DIR" not in expat_inst_blk:
+        raise RuntimeError("Missing BCM_FSBUILD_DIR libexpat.so sync in reinstall: or expat-2.0.1-install:")
+
+    if already_patched:
+        db_src_dir = os.path.join(merlin_dir, "release/src/router/dropbear/src")
+        db_passwd = os.path.join(db_src_dir, "svr-authpasswd.c")
+        if not os.path.isfile(db_passwd):
+            raise RuntimeError(f"Expected patched Dropbear file missing: {db_passwd}")
+        for root, _dirs, files in os.walk(db_src_dir):
+            for fn in sorted(files):
+                if not fn.endswith((".c", ".h")):
+                    continue
+                fp = os.path.join(root, fn)
+                with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                    if "asus_openssl_crypt" in fh.read():
+                        raise RuntimeError(f"Found 3004.388-only asus_openssl_crypt in {fp}")
+
 
 def audit_autotools_timestamps(merlin_dir: str) -> None:
     """Verify 3004.388 Dropbear & Wget generated autotools files are newer than sources."""
@@ -298,7 +321,7 @@ def audit_gnu_make_dryrun(files: dict[str, bytes]) -> None:
                 f"GNU make -nk build-graph failure (rc={proc.returncode}):\n"
                 f"STDERR:\n{proc.stderr[:1200]}\nSTDOUT tail:\n{proc.stdout[-800:]}"
             )
-        for expected in ("no-tests", "-lwlcsm", "AUTOCONF=true", "-march=armv8-a+crc -mtune=cortex-a53"):
+        for expected in ("no-tests", "-lwlcsm", "AUTOCONF=true", "--without-python3", "-march=armv8-a+crc -mtune=cortex-a53"):
             if expected not in proc.stdout:
                 raise RuntimeError(f"Expected '{expected}' in GNU make -nk dry-run output!")
         if "+crypto" in proc.stdout:
