@@ -50,11 +50,11 @@ for cand in cortex-a53 max any; do
 done
 
 run_arm32() {
-    "${QEMU_ARM}" "${QEMU_ARM_CPU_ARGS[@]}" -L "${ROOTFS}" -E "LD_LIBRARY_PATH=${LD_PATHS}" "$@"
+    "${QEMU_ARM}" "${QEMU_ARM_CPU_ARGS[@]}" -L "${ROOTFS}" -E "LD_LIBRARY_PATH=${LD_PATHS}" -E "OPENSSL_CONF=/dev/null" "$@"
 }
 
 run_aarch64() {
-    "${QEMU_AARCH64}" "${QEMU_AARCH64_CPU_ARGS[@]}" -L "${ROOTFS}" -E "LD_LIBRARY_PATH=${LD_PATHS_64}" "$@"
+    "${QEMU_AARCH64}" "${QEMU_AARCH64_CPU_ARGS[@]}" -L "${ROOTFS}" -E "LD_LIBRARY_PATH=${LD_PATHS_64}" -E "OPENSSL_CONF=/dev/null" "$@"
 }
 
 TMP_WORK="$(mktemp -d -t stage4_qemu_XXXXXX)"
