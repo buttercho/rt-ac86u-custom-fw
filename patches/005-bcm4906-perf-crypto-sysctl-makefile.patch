@@ -20,7 +20,7 @@ index 1224f60..18cd6f0 100755
  
  #
 diff --git a/release/src/router/Makefile b/release/src/router/Makefile
-index a37974b..9a703c0 100644
+index a37974b..4c58561 100644
 --- a/release/src/router/Makefile
 +++ b/release/src/router/Makefile
 @@ -2036,7 +2036,13 @@ reinstall:
@@ -38,7 +38,15 @@ index a37974b..9a703c0 100644
  	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/ld-linux.so.3 $(INSTALLDIR)/lib/ld-linux.so.3
  	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/libresolv.so.2 $(INSTALLDIR)/lib/libresolv.so.2
  	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/libcrypt.so.1 $(INSTALLDIR)/lib/libcrypt.so.1
-@@ -3119,7 +3125,7 @@ openssl-1.1/Makefile:
+@@ -2057,6 +2063,7 @@ ifeq ($(BRCM_CHIP),$(filter $(BRCM_CHIP),4908 4912))
+ 	install -D $(TOOLCHAIN_64)/aarch64-buildroot-linux-gnu/sysroot/lib/libc.so.6 $(INSTALLDIR)/lib/aarch64/libc.so.6
+ 	install -D $(TOOLCHAIN_64)/aarch64-buildroot-linux-gnu/sysroot/lib/libnss_dns.so.2 $(INSTALLDIR)/lib/aarch64/libnss_dns.so.2
+ 	install -D $(TOOLCHAIN_64)/aarch64-buildroot-linux-gnu/sysroot/lib/libnss_files.so.2 $(INSTALLDIR)/lib/aarch64/libnss_files.so.2
++	install -D $(TOOLCHAIN_64)/aarch64-buildroot-linux-gnu/sysroot/lib/libresolv.so.2 $(INSTALLDIR)/lib/aarch64/libresolv.so.2
+ endif
+ 
+ #ifeq ($(RTCONFIG_CFEZ),y)
+@@ -3119,7 +3126,7 @@ openssl-1.1/Makefile:
  	$(if $(filter y,$(RTCONFIG_SFP) $(RTCONFIG_4M_SFP) $(RTCONFIG_8M_SFP)),-Os,-O2) \
  	$(if $(RTCONFIG_DEBUG),-g) \
  	-ffunction-sections -fdata-sections -Wl,--gc-sections \
@@ -47,7 +55,7 @@ index a37974b..9a703c0 100644
  	no-aria no-sm2 no-sm3 no-sm4 \
  	--with-rand-seed=devrandom \
  	$(if $(filter y,$(RTCONFIG_WTFAST)),-DRTCONFIG_WTFAST,) \
-@@ -3457,7 +3463,7 @@ dnsmasq:  $(if $(RTCONFIG_DNSSEC_OPENSSL),openssl,) $(if $(RTCONFIG_DNSSEC_NETTL
+@@ -3457,7 +3464,7 @@ dnsmasq:  $(if $(RTCONFIG_DNSSEC_OPENSSL),openssl,) $(if $(RTCONFIG_DNSSEC_NETTL
  		$(if $(RTCONFIG_USB_EXTRAS),,-DNO_TFTP) \
  		$(if $(RTCONFIG_DNSSEC_OPENSSL),-I$(TOP)/openssl/include -DHAVE_DNSSEC,) \
  		$(if $(RTCONFIG_DNSSEC_NETTLE),-I$(TOP)/nettle/include -I$(TOP)/gmp -DHAVE_DNSSEC -DHAVE_DNSSEC_STATIC -DNO_GOST,)" \
@@ -56,7 +64,7 @@ index a37974b..9a703c0 100644
  	LDFLAGS="-ffunction-sections -fdata-sections -Wl,--gc-sections $(EXTRALDFLAGS) \
  		$(if $(RTCONFIG_DNSSEC_OPENSSL),-pthread -L$(TOP)/openssl,) \
  		$(if $(RTCONFIG_DNSSEC_NETTLE),-L$(TOP)/nettle/lib -L$(TOP)/gmp/.libs,)" \
-@@ -3754,9 +3760,9 @@ iptables-1.4.x-clean:
+@@ -3754,9 +3761,9 @@ iptables-1.4.x-clean:
  
  miniupnpd/config.h: shared/version.h
  ifeq ($(RTCONFIG_IGD2),y)
@@ -68,7 +76,7 @@ index a37974b..9a703c0 100644
  endif
  
  miniupnpd: $(IPTABLES) e2fsprogs miniupnpd/config.h
-@@ -5123,11 +5129,11 @@ rstats-install:
+@@ -5123,11 +5130,11 @@ rstats-install:
  
  dropbear/config.h.in: $(if $(RTCONFIG_PROTECTION_SERVER),protect_srv-stage,)
  
@@ -83,7 +91,7 @@ index a37974b..9a703c0 100644
  		LIBS="$(if $(RTCONFIG_PROTECTION_SERVER),-lptcsrv)" \
  		$(CONFIGURE) --disable-harden --disable-zlib --disable-pam \
  		--enable-openpty --enable-syslog --enable-shadow --enable-bundled-libtom \
-@@ -5139,7 +5145,7 @@ dropbear/config.h: dropbear/config.h.in
+@@ -5139,7 +5146,7 @@ dropbear/config.h: dropbear/config.h.in
  
  dropbear: dropbear/config.h
  	@$(SEP)
@@ -92,7 +100,7 @@ index a37974b..9a703c0 100644
  
  dropbear-install:
  	install -D dropbear/dropbearmulti $(INSTALLDIR)/dropbear/usr/bin/dropbearmulti
-@@ -5187,7 +5193,7 @@ endif
+@@ -5187,7 +5194,7 @@ endif
  
  sqlite/stamp-h1:
  	cd sqlite && autoreconf -i -f && \
@@ -101,7 +109,7 @@ index a37974b..9a703c0 100644
  		LDFLAGS="-ffunction-sections -fdata-sections -Wl,--gc-sections -lpthread -ldl" \
  		$(CONFIGURE) --prefix=/usr --enable-shared --enable-static \
  		--disable-readline --disable-dynamic-extensions --enable-threadsafe \
-@@ -5387,7 +5393,7 @@ endif
+@@ -5387,7 +5394,7 @@ endif
  
  zlib/stamp-h1:
  	cd zlib && \
@@ -110,7 +118,7 @@ index a37974b..9a703c0 100644
  	./configure --shared --prefix=/usr --libdir=/usr/lib
  	touch $@
  
-@@ -6147,11 +6153,10 @@ lz4:
+@@ -6147,11 +6154,10 @@ lz4:
  	$(MAKE) -C $@ $(PARALLEL_BUILD)
  
  libcap-ng/configure:
@@ -126,7 +134,7 @@ index a37974b..9a703c0 100644
  	touch $@
  
  libcap-ng: libcap-ng/configure
-@@ -6226,7 +6231,7 @@ openvpn/Makefile:
+@@ -6226,7 +6232,7 @@ openvpn/Makefile:
  		LZ4_LIBS="-L$(TOP)/lz4/lib -llz4" \
  		LIBCAPNG_CFLAGS="-I$(TOP)/libcap-ng/src" \
  		LIBCAPNG_LIBS="-L$(TOP)/libcap-ng/src/.libs -lcap-ng" \
@@ -135,7 +143,7 @@ index a37974b..9a703c0 100644
  			-DASUSWRT -I$(TOP)/libcap-ng/src" \
  		LDFLAGS="$(EXTRALDFLAGS) -ffunction-sections -fdata-sections \
  			-Wl,--gc-sections \
-@@ -6759,7 +6764,7 @@ libssh2-clean:
+@@ -6759,7 +6765,7 @@ libssh2-clean:
  curl/configure:
  	@cd curl && autoreconf -fi
  
@@ -144,7 +152,7 @@ index a37974b..9a703c0 100644
  	@cd curl && $(CONFIGURE) CC=$(CC) \
  		--prefix=/usr --bindir=/usr/sbin --libdir=/usr/lib \
  		--enable-silent-rules \
-@@ -6771,20 +6776,19 @@ curl/Makefile: curl/configure
+@@ -6771,20 +6777,19 @@ curl/Makefile: curl/configure
  		--disable-gopher \
  		--disable-manual --disable-libcurl-option $(if $(RTCONFIG_IPV6),--enable-ipv6,--disable-ipv6) \
  		--disable-threaded-resolver --disable-ntlm-wb \
@@ -169,7 +177,7 @@ index a37974b..9a703c0 100644
  			   $(if $(RTCONFIG_MBEDTLS),-lmbedcrypto -lmbedx509 -lmbedtls,) \
  			   $(if $(RTCONFIG_WOLFSSL),-lwolfssl,)"
  
-@@ -7111,18 +7115,23 @@ hndck:
+@@ -7111,18 +7116,23 @@ hndck:
  
  expat-2.0.1/stamp-h1:
  	cd $(TOP)/expat-2.0.1 && \
@@ -198,7 +206,7 @@ index a37974b..9a703c0 100644
  
  expat-2.0.1-clean:
  	-@$(MAKE) -C expat-2.0.1 clean
-@@ -7462,10 +7471,11 @@ GeoIP-1.6.2-clean:
+@@ -7462,10 +7472,11 @@ GeoIP-1.6.2-clean:
  	@rm -f GeoIP-1.6.2/stamp-h1
  
  wget/Makefile.in: wget/Makefile.am
@@ -212,7 +220,7 @@ index a37974b..9a703c0 100644
  		--with-ssl=openssl --prefix=/usr --sysconfdir=/etc \
  		--disable-opie --disable-ntlm --disable-debug --disable-nls --disable-rpath \
  		$(if $(RTCONFIG_IPV6),,--disable-ipv6) --disable-iri --without-included-regex  \
-@@ -7478,7 +7488,7 @@ wget/Makefile: wget/Makefile.in
+@@ -7478,7 +7489,7 @@ wget/Makefile: wget/Makefile.in
  		LDFLAGS="$(EXTRALDFLAGS) -Wl,--gc-sections -L$(STAGEDIR)/usr/lib -pthread"
  
  wget: openssl zlib wget/Makefile
