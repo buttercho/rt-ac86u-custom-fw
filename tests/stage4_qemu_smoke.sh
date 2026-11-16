@@ -33,7 +33,7 @@ LD_PATHS_64="${ROOTFS}/lib/aarch64:${ROOTFS}/usr/lib/aarch64:${ROOTFS}/usr/lib:$
 
 QEMU_ARM_CPU_ARGS=()
 ARM_CPUS="$("${QEMU_ARM}" -cpu help 2>/dev/null || true)"
-for cand in cortex-a53 cortex-a15 cortex-a7 max any; do
+for cand in cortex-a53 max any cortex-a15 cortex-a7; do
     if echo "${ARM_CPUS}" | grep -qw "${cand}"; then
         QEMU_ARM_CPU_ARGS=(-cpu "${cand}")
         break
