@@ -142,16 +142,26 @@ jobs:
 
       - name: "STAGE 1 (Pre-Build): Patch, Struct ABI & Closed-Source .o Blob Contract Gate"
         run: |
-          docker run --rm \
+          set -o pipefail
+          if ! docker run --rm \
             -v "${GITHUB_WORKSPACE}/custom-fw:/workspace/custom-fw:ro" \
             -v "${GITHUB_WORKSPACE}/asuswrt-merlin.ng:/workspace/build/asuswrt-merlin.ng:ro" \
             -v "/tmp/am-toolchains/brcm-arm-hnd:/opt/toolchains:ro" \
             fw-build:20.04 \
-            /workspace/custom-fw/tests/stage1_prebuild_gate.sh --already-patched /workspace/build/asuswrt-merlin.ng
+            /workspace/custom-fw/tests/stage1_prebuild_gate.sh --already-patched /workspace/build/asuswrt-merlin.ng \
+            2>&1 | tee /tmp/step-stage1.log; then
+            tail -n 25 /tmp/step-stage1.log | while IFS= read -r line; do echo "::error::[stage1] ${line}"; done || true
+            exit 1
+          fi
 
       - name: "STAGE 2 (Pre-Build): ASan + UBSan + GCC -fanalyzer + cppcheck Gate"
         run: |
-          "${GITHUB_WORKSPACE}/custom-fw/tests/run_stage2_local_and_ci.sh" "${GITHUB_WORKSPACE}/asuswrt-merlin.ng"
+          set -o pipefail
+          if ! "${GITHUB_WORKSPACE}/custom-fw/tests/run_stage2_local_and_ci.sh" "${GITHUB_WORKSPACE}/asuswrt-merlin.ng" \
+            2>&1 | tee /tmp/step-stage2.log; then
+            tail -n 25 /tmp/step-stage2.log | while IFS= read -r line; do echo "::error::[stage2] ${line}"; done || true
+            exit 1
+          fi
 
       - name: Compile RT-AC86U firmware inside fw-build:20.04 (make rt-ac86u)
         run: |
