@@ -169,7 +169,7 @@ diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
  					(void)strlcat_r(prefix, name+4, tmp, sizeof(tmp));
  					if(value && strcmp(nvram_safe_get(tmp), value)){
 +						if(!validate_apply_input_value(tmp, value))
-+							continue;
++							return found;
  						dbG("nvram set %s = %s\n", tmp, value);
  						nvram_check_and_set_for_prefix(name, tmp, value);
  						found = NVRAM_MODIFIED_BIT;
