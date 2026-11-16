@@ -2,7 +2,7 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 index 7496899..90dfddd 100644
 --- a/release/src/router/Makefile
 +++ b/release/src/router/Makefile
-@@ -5193,11 +5193,11 @@ endif
+@@ -5194,11 +5194,11 @@ endif
  
  sqlite/stamp-h1:
  	cd sqlite && autoreconf -i -f && \
