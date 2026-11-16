@@ -83,6 +83,7 @@ ALLOWED_AARCH64_PATTERNS = [
     "*/rdpactl",
     "*/blogctl",
     "*/bs",
+    "*/sbin/ldconfig",
 ]
 
 RUNTIME_INTRINSIC_UND = {
