@@ -64,7 +64,8 @@ trap 'rm -rf "${TMP_WORK}"' EXIT
 echo "[stage4:crypto] Testing OpenSSL version & AES-GCM/SHA-256 on emulated Cortex-A53..."
 OPENSSL_OUT="$(run_arm32 "${ROOTFS}/usr/sbin/openssl" version -a)"
 echo "${OPENSSL_OUT}"
-run_arm32 "${ROOTFS}/usr/sbin/openssl" speed -elapsed -seconds 1 aes-128-gcm sha256 >/dev/null
+run_arm32 "${ROOTFS}/usr/sbin/openssl" speed -elapsed -seconds 1 -evp aes-128-gcm >/dev/null
+run_arm32 "${ROOTFS}/usr/sbin/openssl" speed -elapsed -seconds 1 sha256 >/dev/null
 
 CA_BUNDLE=""
 for cand in \

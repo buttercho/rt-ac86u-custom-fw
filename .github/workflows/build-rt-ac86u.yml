@@ -138,11 +138,8 @@ jobs:
           set -o pipefail
           if ! (
             git clone --depth 1 https://github.com/Asuswrt-Merlin/am-buildtools.git "${GITHUB_WORKSPACE}/am-buildtools"
+            printf '\nRUN apt-get update && apt-get install -y --no-install-recommends ccache && rm -rf /var/lib/apt/lists/*\n' >> "${GITHUB_WORKSPACE}/am-buildtools/docker/Dockerfile"
             docker build --build-arg UBUNTU_VERSION=20.04 -t fw-build:20.04 "${GITHUB_WORKSPACE}/am-buildtools/docker"
-            docker build -t fw-build:20.04 - <<'DOCKEREOF'
-          FROM fw-build:20.04
-          RUN apt-get update && apt-get install -y --no-install-recommends ccache && rm -rf /var/lib/apt/lists/*
-          DOCKEREOF
 
             if [[ "${{ steps.cache-toolchains.outputs.cache-hit }}" != "true" || ! -e /tmp/am-toolchains/brcm-arm-hnd/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/usr/bin/arm-buildroot-linux-gnueabi-gcc ]]; then
               rm -rf /tmp/am-toolchains
